@@ -242,6 +242,7 @@ function exportDirty() {
       const folder = subFolder_(base, safe_(m.name) + '_' + id.slice(0, 4));
       const by = function (s) { return (all[s] || []).filter(function (r) { return r.memberId === id; }); };
       writePdf_(folder, '會員紀錄.pdf', memberHtml_(m, by, h, studio));
+      writePhotos_(folder, by('photos'));
       by('contracts').forEach(function (c) {
         writePdf_(folder, '合約_' + safe_(c.title) + '_' + (c.start || String(c.createdAt).slice(0, 10)) + '_' + c.id.slice(0, 4) + '.pdf', contractHtml_(c, m, settings, studio));
       });
@@ -258,6 +259,30 @@ function exportAllNow() {
   PropertiesService.getScriptProperties().setProperty('DIRTY', JSON.stringify(dirty));
   rebuildTabs_(getSpreadsheet_(), Object.keys(LABELS));
   exportDirty();
+}
+
+// 體態照片存成 JPG 放在會員資料夾的「體態照片」裡（只有你自己看得到）
+function writePhotos_(memberFolder, photos) {
+  const it0 = memberFolder.getFoldersByName('體態照片');
+  if (!photos.length && !it0.hasNext()) return;
+  const folder = it0.hasNext() ? it0.next() : memberFolder.createFolder('體態照片');
+  const want = {};
+  photos.forEach(function (ph) {
+    if (!ph.image) return;
+    want[safe_(ph.date + '_' + (ph.angle || '照片')) + '_' + ph.id.slice(0, 6) + '.jpg'] = ph;
+  });
+  const have = {};
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const f = files.next();
+    if (want[f.getName()]) have[f.getName()] = true; else f.setTrashed(true);
+  }
+  Object.keys(want).forEach(function (name) {
+    if (have[name]) return;
+    const m = String(want[name].image).match(/^data:(image\/[a-z]+);base64,(.*)$/);
+    if (!m) return;
+    folder.createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name));
+  });
 }
 
 function safe_(s) { return String(s || '未命名').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40); }

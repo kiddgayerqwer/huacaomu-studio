@@ -86,6 +86,7 @@ const F = {
     { k: 'goals', label: '目標／需求', type: 'textarea', wide: true, ph: '例：減脂 5 公斤、改善肩頸痠痛、睡眠品質' },
     { k: 'health', label: '病史／身體狀況／禁忌', type: 'textarea', wide: true, ph: '例：高血壓、椎間盤突出、懷孕中、近期手術' },
     { k: 'allergy', label: '過敏（含精油過敏）', type: 'textarea', wide: true },
+    { k: '_photos', label: '體態照片', type: 'photos', wide: true },
     { k: 'tags', label: '標籤（用逗號分開）', type: 'text', wide: true, ph: '例：VIP, 上班族' },
     { k: 'note', label: '備註', type: 'textarea', wide: true },
   ],
@@ -161,7 +162,7 @@ const F = {
   ],
 };
 
-const TITLES = { members: '會員', purchases: '買課', sessions: '上課紀錄', services: '服務紀錄', contracts: '合約', appointments: '預約', measurements: '身體數據' };
+const TITLES = { members: '會員', purchases: '買課', sessions: '上課紀錄', services: '服務紀錄', contracts: '合約', appointments: '預約', measurements: '身體數據', photos: '體態照片' };
 
 // ================= 計算 =================
 function used(p) {
@@ -209,6 +210,14 @@ function fieldHTML(f, v, ctx) {
       const ms = DB.all('members').sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
       input = `<select id="${id}" name="${f.k}"${req}><option value="">請選擇會員</option>${ms.map((m) => `<option value="${m.id}"${m.id === v ? ' selected' : ''}>${esc(m.name)}${m.phone ? '・' + esc(m.phone) : ''}</option>`).join('')}</select>`; break;
     }
+    case 'photos': {
+      const olds = ctx.memberId ? DB.byMember('photos', ctx.memberId).sort(byDateDesc) : [];
+      input = `<div class="photo-field">
+        <div class="photo-new"></div>
+        <label class="btn photo-pick">📷 拍照／選擇照片<input type="file" accept="image/*" multiple hidden data-photo-input></label>
+        ${olds.length ? `<div class="muted small">已有 ${olds.length} 張，可在會員頁的「體態照片」查看</div><div class="photo-strip">${olds.slice(0, 8).map((ph) => `<figure><img src="${ph.image}" alt=""><figcaption>${esc(ph.date)}</figcaption></figure>`).join('')}</div>` : ''}
+      </div>`; break;
+    }
     case 'exercises': {
       const rows = Array.isArray(v) && v.length ? v : [{}, {}, {}];
       input = `<div class="ex" data-name="${f.k}"><div class="ex-head"><span>動作</span><span>重量</span><span>次數</span><span>組數</span><span></span></div>${rows.map(exRow).join('')}<button type="button" class="btn ghost small" data-addex>＋ 新增動作</button></div>`; break;
@@ -223,6 +232,7 @@ const exRow = (e = {}) => `<div class="ex-row"><input placeholder="例：深蹲"
 function readForm(form, fields) {
   const out = {};
   for (const f of fields) {
+    if (f.type === 'photos') continue;
     if (f.type === 'chips') {
       out[f.k] = $$(`.chips[data-name="${f.k}"] .chip.on`, form).map((c) => c.dataset.v);
     } else if (f.type === 'exercises') {
@@ -263,6 +273,33 @@ function editRecord(store, rec = {}, ctx = {}) {
       ${!isNew ? `<div class="danger-zone"><button type="button" class="btn danger" data-del>刪除這筆${TITLES[store]}</button></div>` : ''}
     </form>`, { wide: true });
   const form = $('form', sheet);
+  const newPhotos = [];
+  const photoInput = $('[data-photo-input]', form);
+  if (photoInput) {
+    const box = $('.photo-new', form);
+    const draw = () => {
+      box.innerHTML = newPhotos.map((ph, i) => `<div class="photo-item">
+        <img src="${ph.image}" alt="">
+        <div class="photo-meta">
+          <label><span>上傳日期</span><input type="date" value="${ph.date}" data-pi="${i}" data-pk="date"></label>
+          <label><span>角度</span><select data-pi="${i}" data-pk="angle">${PHOTO_ANGLES.map((a) => `<option${a === ph.angle ? ' selected' : ''}>${a}</option>`).join('')}</select></label>
+          <input placeholder="備註（選填）" value="${esc(ph.note)}" data-pi="${i}" data-pk="note">
+        </div>
+        <button type="button" class="x" data-pdel="${i}">✕</button>
+      </div>`).join('');
+    };
+    photoInput.addEventListener('change', async () => {
+      const files = [...photoInput.files];
+      photoInput.value = '';
+      for (const f of files) {
+        try { newPhotos.push({ image: await shrinkImage(f), date: ymd(), angle: '正面', note: '' }); } catch (err) { alert('照片讀取失敗：' + err.message); }
+      }
+      draw();
+    });
+    box.addEventListener('input', (e) => { const t = e.target; if (t.dataset.pi) newPhotos[+t.dataset.pi][t.dataset.pk] = t.value; });
+    box.addEventListener('change', (e) => { const t = e.target; if (t.dataset.pi) newPhotos[+t.dataset.pi][t.dataset.pk] = t.value; });
+    box.addEventListener('click', (e) => { const b = e.target.closest('[data-pdel]'); if (b) { newPhotos.splice(+b.dataset.pdel, 1); draw(); } });
+  }
 
   if (store === 'contracts') {
     const sync = () => {
@@ -300,10 +337,92 @@ function editRecord(store, rec = {}, ctx = {}) {
     e.preventDefault();
     const data = readForm(form, fields);
     const saved = await DB.save(store, { ...rec, ...data, ...(ctx.memberId && store !== 'members' && store !== 'appointments' ? { memberId: ctx.memberId } : {}) });
+    for (const ph of newPhotos) await DB.save('photos', { ...ph, memberId: saved.id, uploadedAt: new Date().toISOString() });
     closeModal();
     toast('已儲存' + (navigator.onLine ? '' : '（離線，連網後自動上傳）'));
     if (ctx.after) ctx.after(saved);
   });
+}
+
+// ================= 體態照片 =================
+const PHOTO_ANGLES = ['正面', '側面', '背面', '其他'];
+
+// 縮小照片（長邊 1280px）再存，減少空間與上傳時間
+function shrinkImage(file, max = 1280) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.78));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('無法讀取這張圖片')); };
+    img.src = url;
+  });
+}
+
+async function quickAddPhotos(memberId, files) {
+  let n = 0;
+  for (const f of files) {
+    try { await DB.save('photos', { memberId, image: await shrinkImage(f), date: ymd(), angle: '正面', note: '', uploadedAt: new Date().toISOString() }); n++; } catch (err) { alert('照片讀取失敗：' + err.message); }
+  }
+  if (n) { memberTab = 'photos'; render(); toast(`已新增 ${n} 張體態照片`); }
+}
+
+function viewPhoto(id) {
+  const ph = DB.get('photos', id);
+  if (!ph) return;
+  const list = DB.byMember('photos', ph.memberId).sort(byDateDesc);
+  const i = list.findIndex((x) => x.id === id);
+  const sheet = openModal(`
+    <header class="sheet-head"><button type="button" class="btn ghost" data-close>關閉</button><h2>${esc(memberName(ph.memberId))}・${esc(ph.date)}</h2><button type="button" class="btn danger" data-delp>刪除</button></header>
+    <div class="photo-view"><img src="${ph.image}" alt=""></div>
+    <div class="grid photo-edit">
+      <label class="field"><span>上傳日期</span><input type="date" value="${esc(ph.date)}" data-k="date"></label>
+      <label class="field"><span>角度</span><select data-k="angle">${PHOTO_ANGLES.map((a) => `<option${a === ph.angle ? ' selected' : ''}>${a}</option>`).join('')}</select></label>
+      <label class="field wide"><span>備註</span><input value="${esc(ph.note)}" data-k="note"></label>
+    </div>
+    <div class="btnrow center-row">
+      <button class="btn" data-nav="${i + 1}" ${i + 1 >= list.length ? 'disabled' : ''}>‹ 較舊</button>
+      <button class="btn primary" data-savep>儲存修改</button>
+      <button class="btn" data-nav="${i - 1}" ${i <= 0 ? 'disabled' : ''}>較新 ›</button>
+    </div>
+    <p class="muted small center">實際上傳時間：${ph.uploadedAt ? esc(new Date(ph.uploadedAt).toLocaleString('zh-TW')) : esc(ph.createdAt ? new Date(ph.createdAt).toLocaleString('zh-TW') : '')}</p>`, { wide: true });
+  sheet.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-close]')) closeModal();
+    const nav = e.target.closest('[data-nav]');
+    if (nav && !nav.disabled) viewPhoto(list[+nav.dataset.nav].id);
+    if (e.target.closest('[data-savep]')) {
+      const upd = { ...ph };
+      $$('[data-k]', sheet).forEach((el) => { upd[el.dataset.k] = el.value; });
+      await DB.save('photos', upd); closeModal(); toast('已儲存');
+    }
+    if (e.target.closest('[data-delp]') && confirm('確定刪除這張照片？')) { await DB.remove('photos', id); closeModal(); toast('已刪除'); }
+  });
+}
+
+function photosTab(memberId) {
+  const list = DB.byMember('photos', memberId).sort(byDateDesc);
+  if (!list.length) return empty('還沒有體態照片，點上方「＋ 體態照片」用相機拍照或從相簿選擇');
+  let compare = '';
+  // 前後對比：優先用同一個角度（正面優先）的最早和最新照片
+  const sameAngle = PHOTO_ANGLES.map((a) => list.filter((x) => x.angle === a)).find((arr) => arr.length >= 2);
+  const cmp = sameAngle || list;
+  if (cmp.length >= 2) {
+    const first = cmp[cmp.length - 1], last = cmp[0];
+    compare = `<section class="card"><h3>前後對比</h3><div class="compare">
+      <figure><img src="${first.image}" alt="" data-act="viewPhoto" data-id="${first.id}"><figcaption>${esc(first.date)}・${esc(first.angle || '')}</figcaption></figure>
+      <figure><img src="${last.image}" alt="" data-act="viewPhoto" data-id="${last.id}"><figcaption>${esc(last.date)}・${esc(last.angle || '')}</figcaption></figure>
+    </div></section>`;
+  }
+  const groups = {};
+  list.forEach((ph) => { (groups[ph.date] = groups[ph.date] || []).push(ph); });
+  return compare + Object.entries(groups).map(([d, arr]) => `<section class="card"><h3>${fmtDate(d)}</h3><div class="photo-grid">${arr.map((ph) => `<figure data-act="viewPhoto" data-id="${ph.id}"><img src="${ph.image}" alt="" loading="lazy"><figcaption>${esc(ph.angle || '')}${ph.note ? '・' + esc(ph.note) : ''}</figcaption></figure>`).join('')}</div></section>`).join('');
 }
 
 // ================= 合約與簽名 =================
@@ -512,7 +631,7 @@ views.member = (id) => {
   const contracts = DB.byMember('contracts', id).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const appts = DB.all('appointments').filter((a) => a.memberId === id).sort(byDateDesc);
   const meas = DB.byMember('measurements', id).sort(byDateDesc);
-  const tabs = [['overview', '總覽'], ['purchases', `買課 ${pks.length}`], ['sessions', `上課 ${sessions.length}`], ['services', `服務 ${services.length}`], ['contracts', `合約 ${contracts.length}`], ['measurements', `身體數據 ${meas.length}`], ['appointments', `預約 ${appts.length}`]];
+  const tabs = [['overview', '總覽'], ['purchases', `買課 ${pks.length}`], ['sessions', `上課 ${sessions.length}`], ['services', `服務 ${services.length}`], ['contracts', `合約 ${contracts.length}`], ['measurements', `身體數據 ${meas.length}`], ['photos', `體態照片 ${DB.byMember('photos', id).length}`], ['appointments', `預約 ${appts.length}`]];
   const active = activePkgs(id);
   const tab = memberTab;
   const totalSpent = pks.reduce((s, p) => s + (Number(p.price) || 0), 0) + services.filter((s) => !s.purchaseId).reduce((s, x) => s + (Number(x.price) || 0), 0);
@@ -563,11 +682,13 @@ views.member = (id) => {
     </div>`).join('') : empty('還沒有合約');
   } else if (tab === 'measurements') {
     body = (meas.length >= 2 ? `<section class="card">${chart(meas.slice().reverse())}</section>` : '') + (meas.length ? `<div class="tablewrap"><table class="mtable"><tr><th>日期</th><th>體重</th><th>體脂%</th><th>肌肉量</th><th>腰圍</th><th>臀圍</th><th>胸圍</th><th>上臂</th><th>大腿</th></tr>${meas.map((x) => `<tr data-act="edit" data-store="measurements" data-id="${x.id}"><td>${esc(x.date)}</td><td>${x.weight ?? ''}</td><td>${x.bodyFat ?? ''}</td><td>${x.muscle ?? ''}</td><td>${x.waist ?? ''}</td><td>${x.hip ?? ''}</td><td>${x.chest ?? ''}</td><td>${x.arm ?? ''}</td><td>${x.thigh ?? ''}</td></tr>`).join('')}</table></div>` : empty('還沒有身體數據'));
+  } else if (tab === 'photos') {
+    body = photosTab(id);
   } else if (tab === 'appointments') {
     body = appts.length ? appts.map((a) => `<div class="rec" data-act="edit" data-store="appointments" data-id="${a.id}"><div class="rec-head"><b>${fmtDate(a.date)} ${esc(a.time)}</b><span class="pill ${a.type === '健身' ? 'fit' : 'spa'}">${esc(a.type || '')}</span><span class="grow"></span><span>${esc(a.status)}</span></div>${a.note ? `<div>${nl2br(a.note)}</div>` : ''}</div>`).join('') : empty('還沒有預約');
   }
 
-  const addMap = { purchases: '＋ 買課', sessions: '＋ 上課紀錄', services: '＋ 服務紀錄', contracts: '＋ 合約', measurements: '＋ 身體數據', appointments: '＋ 預約' };
+  const addMap = { purchases: '＋ 買課', sessions: '＋ 上課紀錄', services: '＋ 服務紀錄', contracts: '＋ 合約', measurements: '＋ 身體數據', photos: '＋ 體態照片', appointments: '＋ 預約' };
   return `
   <section class="member-head">
     <a href="#/members" class="back">‹ 會員</a>
@@ -583,11 +704,12 @@ views.member = (id) => {
       <button class="btn" data-act="add" data-store="contracts">＋ 合約</button>
       <button class="btn" data-act="add" data-store="appointments">＋ 預約</button>
       <button class="btn" data-act="add" data-store="measurements">＋ 身體數據</button>
+      <label class="btn">＋ 體態照片<input type="file" accept="image/*" multiple hidden data-quick-photo></label>
       <button class="btn ghost" data-act="printMember">🖨 列印</button>
     </div>
   </section>
   <nav class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-act="tab" data-tab="${k}">${l}</button>`).join('')}</nav>
-  ${addMap[tab] ? `<div class="tab-add"><button class="btn primary small" data-act="add" data-store="${tab}">${addMap[tab]}</button></div>` : ''}
+  ${tab === 'photos' ? `<div class="tab-add"><label class="btn primary small">${addMap.photos}<input type="file" accept="image/*" multiple hidden data-quick-photo></label></div>` : addMap[tab] ? `<div class="tab-add"><button class="btn primary small" data-act="add" data-store="${tab}">${addMap[tab]}</button></div>` : ''}
   <div class="tab-body" data-member="${id}">${body}</div>`;
 };
 
@@ -660,7 +782,7 @@ views.reports = () => {
     <section class="card"><h3>消費排行</h3>${top.length ? top.map((x, i) => `<a class="row" href="#/member/${x.m.id}"><span class="time">${i + 1}</span><span class="grow">${esc(x.m.name)}</span><b>${money(x.v)}</b></a>`).join('') : empty('還沒有資料')}</section>
     <section class="card"><h3>常用精油</h3>${oils.length ? oils.map(([o, n]) => `<div class="row"><span class="grow">${esc(o)}</span><span class="muted">${n} 次</span></div>`).join('') : empty('還沒有資料')}</section>
   </div>
-  <section class="card"><h3>匯出 Excel（CSV）</h3><p class="muted">可直接用 Excel 開啟。</p><div class="btnrow">${Object.keys(TITLES).map((s) => `<button class="btn" data-act="csv" data-store="${s}">${TITLES[s]}</button>`).join('')}</div></section>`;
+  <section class="card"><h3>匯出 Excel（CSV）</h3><p class="muted">可直接用 Excel 開啟。</p><div class="btnrow">${Object.keys(TITLES).filter((s) => F[s]).map((s) => `<button class="btn" data-act="csv" data-store="${s}">${TITLES[s]}</button>`).join('')}</div></section>`;
 };
 
 views.settings = () => {
@@ -763,7 +885,7 @@ const actions = {
   newAppt: (d) => editRecord('appointments', d.date ? { date: d.date } : {}, {}),
   edit: (d) => {
     const rec = DB.get(d.store, d.id);
-    if (rec) editRecord(d.store, rec, { memberId: rec.memberId });
+    if (rec) editRecord(d.store, rec, { memberId: d.store === 'members' ? rec.id : rec.memberId });
   },
   add: (d) => {
     const mid = $('.tab-body')?.dataset.member || location.hash.split('/')[2];
@@ -785,6 +907,7 @@ const actions = {
   logout: async () => { if (confirm('中斷後資料仍會保留在這台裝置，但不再同步到雲端。確定中斷？')) { await Sync.logout(); render(); } },
   resetTemplate: () => { if (confirm('還原成預設合約範本？')) { $('[name=contractTemplate]').value = DEFAULT_SETTINGS.contractTemplate; } },
   printMember: () => printMember(location.hash.split('/')[2]),
+  viewPhoto: (d) => viewPhoto(d.id),
 };
 
 document.addEventListener('click', (e) => {
@@ -805,6 +928,12 @@ document.addEventListener('input', (e) => {
 });
 
 document.addEventListener('change', async (e) => {
+  if (e.target.matches('[data-quick-photo]')) {
+    const files = [...e.target.files];
+    e.target.value = '';
+    await quickAddPhotos(location.hash.split('/')[2], files);
+    return;
+  }
   if (e.target.matches('[data-import]')) {
     const file = e.target.files[0];
     if (!file) return;
