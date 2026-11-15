@@ -1,9 +1,10 @@
 // 離線快取：網頁檔案存在 iPad 上，沒網路也能打開
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = 'huacaomu-' + VERSION;
 const FILES = [
   './', './index.html', './css/style.css', './js/app.js', './js/db.js', './js/sync.js', './js/config.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
+  './icons/logo.png', './icons/logo-wreath.png', './icons/sprig-tl.png', './icons/sprig-br.png', './icons/marble.jpg', './icons/icon-maskable.png',
 ];
 
 self.addEventListener('install', (e) => {

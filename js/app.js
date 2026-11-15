@@ -367,6 +367,7 @@ function signaturePad(title) {
 function contractDoc(c) {
   const m = member(c.memberId) || {};
   return `<article class="contract-doc">
+    <img class="contract-logo" src="icons/logo.png" alt="">
     <h1>${esc(SETTINGS.studioName)}</h1>
     <h2>${esc(c.title)}</h2>
     <table class="kv">
@@ -460,8 +461,9 @@ views.home = () => {
   const pkRow = (p, extra) => `<a class="row" href="#/member/${p.memberId}"><span class="grow"><b>${esc(memberName(p.memberId))}</b>・${esc(p.name)}</span><span class="muted">${extra}</span></a>`;
 
   return `
-  <section class="hero">
-    <div><h1>${esc(SETTINGS.studioName)}</h1><p class="muted">${fmtDate(today)}</p></div>
+  <section class="hero home-hero">
+    <img class="wreath" src="icons/logo-wreath.png" alt="${esc(SETTINGS.studioName)}">
+    <p class="muted">${fmtDate(today)}</p>
     <div class="hero-actions"><button class="btn primary" data-act="newMember">＋ 新增會員</button><button class="btn" data-act="newAppt">＋ 新增預約</button></div>
   </section>
   <section class="stats">
