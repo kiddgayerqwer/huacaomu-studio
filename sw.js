@@ -1,5 +1,5 @@
 // 離線快取：網頁檔案存在 iPad 上，沒網路也能打開
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = 'huacaomu-' + VERSION;
 const FILES = [
   './', './index.html', './css/style.css', './js/app.js', './js/db.js', './js/sync.js', './js/config.js',
@@ -20,7 +20,7 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET' || url.origin !== location.origin) return; // 雲端 API 不快取
   // 先用網路拿最新版，沒網路時用快取
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' }) // 每次向伺服器確認最新版，避免新舊檔案混用
       .then((res) => {
         if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }
         return res;
