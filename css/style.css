@@ -294,3 +294,12 @@ h1, h3 { color: var(--olive-text); }
 .photo-view img { max-width: 100%; max-height: 62vh; border-radius: 12px; }
 .photo-edit { margin: 12px 0; }
 .center-row { justify-content: center; margin-bottom: 8px; }
+
+/* ===== 客戶簽到表 ===== */
+.checkin-table tr[data-act] { cursor: pointer; }
+.checkin-table td { vertical-align: middle; }
+.sigcell img { height: 42px; max-width: 140px; object-fit: contain; display: block; }
+.sigview { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 10px; margin: 14px 0; text-align: center; min-height: 120px; }
+.sigview img { max-width: 100%; max-height: 220px; }
+.checkin-print td, .checkin-print th { text-align: center; }
+.checkin-print .sigcell img { height: 48px; margin: 0 auto; }

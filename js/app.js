@@ -152,6 +152,13 @@ const F = {
     { k: 'bp', label: '血壓', type: 'text', ph: '例：120/80' },
     { k: 'note', label: '備註', type: 'textarea', wide: true },
   ],
+  checkins: [
+    { k: 'date', label: '日期', type: 'date', def: () => ymd(), required: true },
+    { k: 'time', label: '時間', type: 'time', def: () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; } },
+    { k: 'type', label: '項目', type: 'select', options: OPT.apptType, def: '健身' },
+    { k: 'purchaseId', label: '扣抵課程（扣 1 堂）', type: 'purchase', cat: null, any: true, active: true, noneLabel: '不扣堂（體驗／單次付費）' },
+    { k: 'note', label: '備註', type: 'text', wide: true },
+  ],
   contracts: [
     { k: 'purchaseId', label: '對應課程', type: 'purchase', cat: null, any: true },
     { k: 'title', label: '合約名稱', type: 'text', required: true, def: '課程服務合約' },
@@ -162,7 +169,7 @@ const F = {
   ],
 };
 
-const TITLES = { members: '會員', purchases: '買課', sessions: '上課紀錄', services: '服務紀錄', contracts: '合約', appointments: '預約', measurements: '身體數據', photos: '體態照片' };
+const TITLES = { members: '會員', purchases: '買課', sessions: '上課紀錄', services: '服務紀錄', contracts: '合約', appointments: '預約', measurements: '身體數據', photos: '體態照片', checkins: '簽到' };
 
 // ================= 計算 =================
 function used(p) {
@@ -202,9 +209,9 @@ function fieldHTML(f, v, ctx) {
     }
     case 'purchase': {
       const pkgs = DB.byMember('purchases', ctx.memberId).filter((p) => f.any || p.category === f.cat);
-      const opts = pkgs.filter((p) => p.id === v || (remaining(p) > 0 && !expired(p)) || f.any);
-      if (v === undefined && !f.any) { v = activePkgs(ctx.memberId, f.cat)[0]?.id || ''; }
-      input = `<select id="${id}" name="${f.k}"><option value="">${f.any ? '（不指定）' : '不扣課程（單次付費／體驗）'}</option>${opts.map((p) => `<option value="${p.id}"${p.id === v ? ' selected' : ''}>${esc(p.name)}・剩 ${remaining(p)} 堂${p.expiry ? '・到期 ' + p.expiry : ''}</option>`).join('')}</select>`; break;
+      const opts = pkgs.filter((p) => p.id === v || (remaining(p) > 0 && !expired(p)) || (f.any && !f.active));
+      if (v === undefined && (!f.any || f.active)) { v = activePkgs(ctx.memberId, f.cat)[0]?.id || ''; }
+      input = `<select id="${id}" name="${f.k}"><option value="">${f.noneLabel || (f.any ? '（不指定）' : '不扣課程（單次付費／體驗）')}</option>${opts.map((p) => `<option value="${p.id}"${p.id === v ? ' selected' : ''}>${esc(p.name)}・剩 ${remaining(p)} 堂${p.expiry ? '・到期 ' + p.expiry : ''}</option>`).join('')}</select>`; break;
     }
     case 'member': {
       const ms = DB.all('members').sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
@@ -301,6 +308,14 @@ function editRecord(store, rec = {}, ctx = {}) {
     box.addEventListener('input', (e) => { const t = e.target; if (t.dataset.pi) newPhotos[+t.dataset.pi][t.dataset.pk] = t.value; });
     box.addEventListener('change', (e) => { const t = e.target; if (t.dataset.pi) newPhotos[+t.dataset.pi][t.dataset.pk] = t.value; });
     box.addEventListener('click', (e) => { const b = e.target.closest('[data-pdel]'); if (b) { newPhotos.splice(+b.dataset.pdel, 1); draw(); } });
+  }
+
+  if (store === 'checkins' && isNew) {
+    form.elements.namedItem('type').addEventListener('change', (e) => {
+      const cat = e.target.value === '健身' ? 'fitness' : e.target.value === '芳療按摩' ? 'massage' : null;
+      const pk = activePkgs(ctx.memberId, cat)[0];
+      form.elements.namedItem('purchaseId').value = pk ? pk.id : '';
+    });
   }
 
   if (store === 'contracts') {
@@ -425,6 +440,91 @@ function photosTab(memberId) {
   const groups = {};
   list.forEach((ph) => { (groups[ph.date] = groups[ph.date] || []).push(ph); });
   return compare + Object.entries(groups).map(([d, arr]) => `<section class="card"><h3>${fmtDate(d)}</h3><div class="photo-grid">${arr.map((ph) => `<figure data-act="viewPhoto" data-id="${ph.id}"><img src="${ph.image}" alt="" loading="lazy"><figcaption>${esc(ph.angle || '')}${ph.note ? '・' + esc(ph.note) : ''}</figcaption></figure>`).join('')}</div></section>`).join('');
+}
+
+// ================= 客戶簽到表 =================
+// 簽到 → 會員手寫簽名 → 若有選課程，自動建立一筆上課／服務紀錄並扣 1 堂
+function newCheckin(memberId) {
+  const first = activePkgs(memberId)[0];
+  editRecord('checkins', { type: first && first.category === 'massage' ? '芳療按摩' : '健身' }, { memberId, after: async (c) => {
+    if (c.purchaseId && !c.recordId) {
+      const p = DB.get('purchases', c.purchaseId);
+      const store = p && p.category === 'fitness' ? 'sessions' : 'services';
+      const r = await DB.save(store, { memberId, date: c.date, time: c.time, purchaseId: c.purchaseId, note: '（簽到自動建立）', checkinId: c.id });
+      c = await DB.save('checkins', { ...c, recordId: r.id, recordStore: store, nth: used(p), total: Number(p.total) || 0 });
+    }
+    const sig = await signaturePad(`會員簽到：${memberName(memberId)}`);
+    if (sig) c = await DB.save('checkins', { ...c, signature: sig, signedAt: new Date().toISOString() });
+    memberTab = 'checkins';
+    render();
+    toast(sig ? '簽到完成' : '已簽到（尚未簽名，可點該筆補簽）');
+  } });
+}
+
+function viewCheckin(id) {
+  const c = DB.get('checkins', id);
+  if (!c) return;
+  const p = c.purchaseId && DB.get('purchases', c.purchaseId);
+  const sheet = openModal(`
+    <header class="sheet-head"><button type="button" class="btn ghost" data-close>關閉</button><h2>簽到・${esc(memberName(c.memberId))}</h2><button type="button" class="btn" data-edit>編輯</button></header>
+    <dl class="info">
+      <dt>日期</dt><dd>${fmtDate(c.date)} ${esc(c.time || '')}</dd>
+      <dt>項目</dt><dd>${esc(c.type || '')}</dd>
+      <dt>課程</dt><dd>${p ? `${esc(p.name)}${c.nth ? `・第 ${c.nth} 堂／共 ${c.total} 堂` : ''}` : '不扣堂'}</dd>
+      ${c.note ? `<dt>備註</dt><dd>${esc(c.note)}</dd>` : ''}
+    </dl>
+    <div class="sigview">${c.signature ? `<img src="${c.signature}" alt="簽名">` : '<p class="muted center">尚未簽名</p>'}</div>
+    <div class="btnrow center-row">
+      <button class="btn primary" data-sign>✍️ ${c.signature ? '重新簽名' : '會員簽名'}</button>
+      ${c.recordId ? '<button class="btn" data-rec>查看上課／服務紀錄</button>' : ''}
+      <button class="btn danger" data-delc>刪除</button>
+    </div>`, { wide: true });
+  sheet.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-close]')) closeModal();
+    if (e.target.closest('[data-edit]')) editRecord('checkins', c, { memberId: c.memberId, after: (s2) => viewCheckin(s2.id) });
+    if (e.target.closest('[data-rec]')) { const r = DB.get(c.recordStore, c.recordId); if (r) editRecord(c.recordStore, r, { memberId: c.memberId }); else toast('對應的紀錄已被刪除'); }
+    if (e.target.closest('[data-sign]')) {
+      const sig = await signaturePad(`會員簽到：${memberName(c.memberId)}`);
+      if (sig) { await DB.save('checkins', { ...c, signature: sig, signedAt: new Date().toISOString() }); toast('簽名已儲存'); }
+      viewCheckin(c.id);
+    }
+    if (e.target.closest('[data-delc]')) {
+      const linked = c.recordId && DB.get(c.recordStore, c.recordId);
+      if (!confirm(linked ? '確定刪除這筆簽到？\n（會一併刪除自動建立的上課／服務紀錄，堂數會還回去）' : '確定刪除這筆簽到？')) return;
+      if (linked) await DB.remove(c.recordStore, c.recordId);
+      await DB.remove('checkins', c.id);
+      closeModal(); toast('已刪除');
+    }
+  });
+}
+
+function checkinRows(list) {
+  return list.map((c, i) => {
+    const p = c.purchaseId && DB.get('purchases', c.purchaseId);
+    return `<tr data-act="viewCheckin" data-id="${c.id}">
+      <td>${list.length - i}</td><td>${esc(c.date)}</td><td>${esc(c.time || '')}</td><td>${esc(c.type || '')}</td>
+      <td>${p ? esc(p.name) : '不扣堂'}</td><td>${c.nth ? `${c.nth}/${c.total}` : ''}</td>
+      <td class="sigcell">${c.signature ? `<img src="${c.signature}" alt="簽名">` : '<span class="red">未簽</span>'}</td></tr>`;
+  }).join('');
+}
+
+function checkinsTab(memberId) {
+  const list = DB.byMember('checkins', memberId).sort(byDateDesc);
+  if (!list.length) return empty('還沒有簽到紀錄。會員來上課時，點上方「✍️ 簽到」讓會員簽名');
+  return `<div class="tablewrap"><table class="mtable checkin-table">
+    <tr><th>#</th><th>日期</th><th>時間</th><th>項目</th><th>課程</th><th>堂次</th><th>會員簽名</th></tr>
+    ${checkinRows(list)}</table></div>
+    <div class="btnrow center-row" style="margin-top:12px"><button class="btn" data-act="printCheckins">🖨 列印簽到表</button></div>`;
+}
+
+function printCheckins(memberId) {
+  const m = member(memberId);
+  const list = DB.byMember('checkins', memberId).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+  printHTML(`<article class="contract-doc"><img class="contract-logo" src="icons/logo.png" alt=""><h1>${esc(SETTINGS.studioName)}</h1><h2>客戶簽到表</h2>
+    <p>會員：${esc(m.name)}　電話：${esc(m.phone || '')}</p>
+    <table class="kv checkin-print"><tr><th>#</th><th>日期</th><th>時間</th><th>項目</th><th>課程</th><th>堂次</th><th>會員簽名</th></tr>
+    ${list.map((c, i) => { const p = c.purchaseId && DB.get('purchases', c.purchaseId); return `<tr><td>${i + 1}</td><td>${esc(c.date)}</td><td>${esc(c.time || '')}</td><td>${esc(c.type || '')}</td><td>${p ? esc(p.name) : '不扣堂'}</td><td>${c.nth ? `${c.nth}/${c.total}` : ''}</td><td class="sigcell">${c.signature ? `<img src="${c.signature}">` : ''}</td></tr>`; }).join('')}
+    </table></article>`, `${m.name}_簽到表`);
 }
 
 // ================= 合約與簽名 =================
@@ -647,7 +747,7 @@ views.member = (id) => {
   const contracts = DB.byMember('contracts', id).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const appts = DB.all('appointments').filter((a) => a.memberId === id).sort(byDateDesc);
   const meas = DB.byMember('measurements', id).sort(byDateDesc);
-  const tabs = [['overview', '總覽'], ['purchases', `買課 ${pks.length}`], ['sessions', `上課 ${sessions.length}`], ['services', `服務 ${services.length}`], ['contracts', `合約 ${contracts.length}`], ['measurements', `身體數據 ${meas.length}`], ['photos', `體態照片 ${DB.byMember('photos', id).length}`], ['appointments', `預約 ${appts.length}`]];
+  const tabs = [['overview', '總覽'], ['purchases', `買課 ${pks.length}`], ['sessions', `上課 ${sessions.length}`], ['services', `服務 ${services.length}`], ['contracts', `合約 ${contracts.length}`], ['measurements', `身體數據 ${meas.length}`], ['checkins', `簽到表 ${DB.byMember('checkins', id).length}`], ['photos', `體態照片 ${DB.byMember('photos', id).length}`], ['appointments', `預約 ${appts.length}`]];
   const active = activePkgs(id);
   const tab = memberTab;
   const totalSpent = pks.reduce((s, p) => s + (Number(p.price) || 0), 0) + services.filter((s) => !s.purchaseId).reduce((s, x) => s + (Number(x.price) || 0), 0);
@@ -698,13 +798,15 @@ views.member = (id) => {
     </div>`).join('') : empty('還沒有合約');
   } else if (tab === 'measurements') {
     body = (meas.length >= 2 ? `<section class="card">${chart(meas.slice().reverse())}</section>` : '') + (meas.length ? `<div class="tablewrap"><table class="mtable"><tr><th>日期</th><th>體重</th><th>體脂%</th><th>肌肉量</th><th>腰圍</th><th>臀圍</th><th>胸圍</th><th>上臂</th><th>大腿</th></tr>${meas.map((x) => `<tr data-act="edit" data-store="measurements" data-id="${x.id}"><td>${esc(x.date)}</td><td>${x.weight ?? ''}</td><td>${x.bodyFat ?? ''}</td><td>${x.muscle ?? ''}</td><td>${x.waist ?? ''}</td><td>${x.hip ?? ''}</td><td>${x.chest ?? ''}</td><td>${x.arm ?? ''}</td><td>${x.thigh ?? ''}</td></tr>`).join('')}</table></div>` : empty('還沒有身體數據'));
+  } else if (tab === 'checkins') {
+    body = checkinsTab(id);
   } else if (tab === 'photos') {
     body = photosTab(id);
   } else if (tab === 'appointments') {
     body = appts.length ? appts.map((a) => `<div class="rec" data-act="edit" data-store="appointments" data-id="${a.id}"><div class="rec-head"><b>${fmtDate(a.date)} ${esc(a.time)}</b><span class="pill ${a.type === '健身' ? 'fit' : 'spa'}">${esc(a.type || '')}</span><span class="grow"></span><span>${esc(a.status)}</span></div>${a.note ? `<div>${nl2br(a.note)}</div>` : ''}</div>`).join('') : empty('還沒有預約');
   }
 
-  const addMap = { purchases: '＋ 買課', sessions: '＋ 上課紀錄', services: '＋ 服務紀錄', contracts: '＋ 合約', measurements: '＋ 身體數據', photos: '＋ 體態照片', appointments: '＋ 預約' };
+  const addMap = { purchases: '＋ 買課', sessions: '＋ 上課紀錄', services: '＋ 服務紀錄', contracts: '＋ 合約', measurements: '＋ 身體數據', photos: '＋ 體態照片', checkins: '✍️ 簽到', appointments: '＋ 預約' };
   return `
   <section class="member-head">
     <a href="#/members" class="back">‹ 會員</a>
@@ -714,6 +816,7 @@ views.member = (id) => {
       <button class="btn ghost" data-act="edit" data-store="members" data-id="${m.id}">編輯資料</button>
     </div>
     <div class="quick">
+      <button class="btn primary" data-act="add" data-store="checkins">✍️ 簽到</button>
       <button class="btn fitb" data-act="add" data-store="sessions">＋ 上課紀錄</button>
       <button class="btn spab" data-act="add" data-store="services">＋ 服務紀錄</button>
       <button class="btn" data-act="add" data-store="purchases">＋ 買課</button>
@@ -906,6 +1009,7 @@ const actions = {
   add: (d) => {
     const mid = $('.tab-body')?.dataset.member || location.hash.split('/')[2];
     if (d.store === 'appointments') return editRecord('appointments', { memberId: mid, type: '健身' }, {});
+    if (d.store === 'checkins') return newCheckin(mid);
     editRecord(d.store, {}, { memberId: mid, after: (s) => { if (d.store === 'contracts') viewContract(s.id); else { memberTab = d.store; render(); } } });
   },
   tab: (d) => { memberTab = d.tab; render(); },
@@ -924,6 +1028,8 @@ const actions = {
   resetTemplate: () => { if (confirm('還原成預設合約範本？')) { $('[name=contractTemplate]').value = DEFAULT_SETTINGS.contractTemplate; } },
   printMember: () => printMember(location.hash.split('/')[2]),
   viewPhoto: (d) => viewPhoto(d.id),
+  viewCheckin: (d) => viewCheckin(d.id),
+  printCheckins: () => printCheckins(location.hash.split('/')[2]),
 };
 
 document.addEventListener('click', (e) => {

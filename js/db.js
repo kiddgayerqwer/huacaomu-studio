@@ -1,10 +1,10 @@
 // 本機資料庫：所有資料先存在 iPad (IndexedDB)，離線也能用。
 // 每次修改都會放進「待上傳」佇列，有網路時由 sync.js 上傳到雲端。
 
-export const STORES = ['members', 'purchases', 'sessions', 'services', 'contracts', 'appointments', 'measurements', 'settings', 'photos'];
+export const STORES = ['members', 'purchases', 'sessions', 'services', 'contracts', 'appointments', 'measurements', 'settings', 'photos', 'checkins'];
 
 const DB_NAME = 'huacaomu-studio';
-const DB_VER = 2; // v2: 新增 photos（體態照片）
+const DB_VER = 3; // v2: photos（體態照片）、v3: checkins（簽到表）
 let db;
 const cache = {};
 const listeners = new Set();

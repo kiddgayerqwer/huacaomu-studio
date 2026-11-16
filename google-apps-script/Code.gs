@@ -22,6 +22,7 @@ const LABELS = {
   services: ['服務紀錄', { _member: '會員', date: '日期', time: '時間', duration: '分鐘', _pkg: '扣抵課程', item: '服務項目', price: '單次收費', oils: '精油', blend: '調油配方', areas: '部位', pressure: '力道', before: '服務前', after: '服務後', advice: '居家建議', note: '備註' }],
   contracts: ['合約', { _member: '會員', title: '合約名稱', start: '開始日', end: '結束日', amount: '金額', _signed: '會員已簽名', signedAt: '簽署時間' }],
   appointments: ['預約', { _member: '會員', date: '日期', time: '時間', duration: '分鐘', type: '類型', status: '狀態', note: '備註' }],
+  checkins: ['簽到表', { _member: '會員', date: '日期', time: '時間', type: '項目', _pkg: '扣抵課程', _nth: '堂次', _signed: '已簽名', note: '備註' }],
   measurements: ['身體數據', { _member: '會員', date: '日期', weight: '體重', bodyFat: '體脂%', muscle: '肌肉量', visceral: '內臟脂肪', chest: '胸圍', waist: '腰圍', hip: '臀圍', arm: '上臂', thigh: '大腿', bp: '血壓', note: '備註' }],
 };
 const CATS = { fitness: '健身', massage: '芳療按摩', other: '其他' };
@@ -186,7 +187,8 @@ function cell_(store, k, r, h) {
   if (k === '_pkg') return h.pkgs[r.purchaseId] ? h.pkgs[r.purchaseId].name : (r.purchaseId ? '' : '單次');
   if (k === '_used') return h.used(r);
   if (k === '_left') return (Number(r.total) || 0) - h.used(r);
-  if (k === '_signed') return r.memberSig ? '是' : '否';
+  if (k === '_signed') return (r.memberSig || r.signature) ? '是' : '否';
+  if (k === '_nth') return r.nth ? r.nth + '/' + r.total : '';
   if (k === 'category') return CATS[r[k]] || r[k] || '';
   if (k === 'exercises') return (r.exercises || []).map(function (e) { return e.name + ' ' + (e.weight || '') + ' ' + (e.reps || '') + 'x' + (e.sets || ''); }).join('\n');
   const v = r[k];
@@ -309,6 +311,13 @@ function memberHtml_(m, by, h, studio) {
     return '<h3>' + title + '（' + rows.length + '）</h3><table><tr>' + keys.map(function (k) { return '<th>' + cols[k] + '</th>'; }).join('') + '</tr>' +
       rows.map(function (r) { return '<tr>' + keys.map(function (k) { return '<td>' + e_(cell_(store, k, r, h)) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table>';
   };
+  const cks = by('checkins').sort(function (a, b) { return String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))); });
+  if (cks.length) {
+    html += '<h3>客戶簽到表（' + cks.length + '）</h3><table><tr><th>#</th><th>日期</th><th>時間</th><th>項目</th><th>課程</th><th>堂次</th><th>會員簽名</th></tr>' +
+      cks.map(function (c, i) {
+        return '<tr><td>' + (i + 1) + '</td><td>' + e_(c.date) + '</td><td>' + e_(c.time) + '</td><td>' + e_(c.type) + '</td><td>' + e_(cell_('checkins', '_pkg', c, h)) + '</td><td>' + e_(cell_('checkins', '_nth', c, h)) + '</td><td>' + (c.signature ? '<img src="' + c.signature + '" style="height:40px">' : '') + '</td></tr>';
+      }).join('') + '</table>';
+  }
   html += section('purchases', '買課紀錄') + section('sessions', '上課紀錄') + section('services', '服務紀錄') + section('measurements', '身體數據') + section('appointments', '預約');
   html += '<p style="text-align:right;color:#888">更新時間：' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm') + '</p>';
   return html;
