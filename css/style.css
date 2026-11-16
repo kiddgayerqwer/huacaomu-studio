@@ -248,7 +248,6 @@ h1, h3 { color: var(--olive-text); }
 .stat span { color: var(--olive-text); font-weight: 600; letter-spacing: .06em; }
 .stat b { color: var(--ink); }
 .home-hero { flex-direction: column; text-align: center; gap: 4px; margin-bottom: 20px; }
-.home-hero .wreath { width: min(300px, 70vw); height: auto; margin: -6px auto -10px; filter: drop-shadow(0 4px 10px rgba(80,60,30,.08)); }
 .home-hero .hero-actions { justify-content: center; margin-top: 8px; }
 .page-head h1, .member-head h1 { letter-spacing: .08em; }
 .page-head h1::before {
