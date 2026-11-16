@@ -17,7 +17,7 @@ const MAX_CHUNKS = 20;
 
 const LABELS = {
   members: ['會員', { name: '姓名', phone: '電話', gender: '性別', birthday: '生日', email: 'Email', line: 'LINE', address: '地址', emergency: '緊急聯絡人', joinDate: '入會日期', source: '來源', height: '身高', occupation: '職業', goals: '目標', health: '身體狀況/禁忌', allergy: '過敏', tags: '標籤', note: '備註' }],
-  purchases: ['買課紀錄', { _member: '會員', category: '類別', name: '方案名稱', total: '堂數', _used: '已用', _left: '剩餘', price: '金額', paid: '已付', method: '付款方式', date: '購買日期', expiry: '到期日', note: '備註' }],
+  purchases: ['買課紀錄', { _member: '會員', category: '類別', name: '方案名稱', total: '堂數', usedBefore: '轉入前已上', _used: '已用', _left: '剩餘', price: '金額', paid: '已付', method: '付款方式', date: '購買日期', expiry: '到期日', note: '備註' }],
   sessions: ['上課紀錄', { _member: '會員', date: '日期', time: '時間', duration: '分鐘', _pkg: '扣抵課程', focus: '訓練重點', exercises: '訓練內容', condition: '當天狀況', rpe: 'RPE', homework: '回家功課', note: '備註' }],
   services: ['服務紀錄', { _member: '會員', date: '日期', time: '時間', duration: '分鐘', _pkg: '扣抵課程', item: '服務項目', price: '單次收費', oils: '精油', blend: '調油配方', areas: '部位', pressure: '力道', before: '服務前', after: '服務後', advice: '居家建議', note: '備註' }],
   contracts: ['合約', { _member: '會員', title: '合約名稱', start: '開始日', end: '結束日', amount: '金額', _signed: '會員已簽名', signedAt: '簽署時間' }],
@@ -179,7 +179,7 @@ function helpers_(all) {
   (all.purchases || []).forEach(function (p) { pkgs[p.id] = p; });
   const usedCount = {};
   (all.sessions || []).concat(all.services || []).forEach(function (s) { if (s.purchaseId) usedCount[s.purchaseId] = (usedCount[s.purchaseId] || 0) + 1; });
-  return { members: members, pkgs: pkgs, used: function (p) { return usedCount[p.id] || 0; } };
+  return { members: members, pkgs: pkgs, used: function (p) { return (Number(p.usedBefore) || 0) + (usedCount[p.id] || 0); } };
 }
 
 function cell_(store, k, r, h) {

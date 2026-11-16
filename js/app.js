@@ -94,6 +94,7 @@ const F = {
     { k: 'category', label: '類別', type: 'select', options: Object.keys(CATS), labels: CATS, def: 'fitness', required: true },
     { k: 'name', label: '方案名稱', type: 'text', required: true, ph: '例：一對一健身 10 堂' },
     { k: 'total', label: '堂數', type: 'number', required: true, def: 10 },
+    { k: 'usedBefore', label: '開始用 App 前已上堂數', type: 'number', hint: '舊會員轉入時填，新買的課留空' },
     { k: 'price', label: '金額', type: 'number', required: true },
     { k: 'paid', label: '已付金額', type: 'number', hint: '空白表示已付清' },
     { k: 'method', label: '付款方式', type: 'select', options: OPT.method },
@@ -173,7 +174,14 @@ const TITLES = { members: '會員', purchases: '買課', sessions: '上課紀錄
 
 // ================= 計算 =================
 function used(p) {
-  return DB.all('sessions').filter((s) => s.purchaseId === p.id).length + DB.all('services').filter((s) => s.purchaseId === p.id).length;
+  return (Number(p.usedBefore) || 0)
+    + DB.all('sessions').filter((s) => s.purchaseId === p.id).length
+    + DB.all('services').filter((s) => s.purchaseId === p.id).length;
+}
+// 會員的有效課程，同類別的排前面
+function sortedPkgs(memberId, cat) {
+  const all = activePkgs(memberId);
+  return [...all.filter((p) => p.category === cat), ...all.filter((p) => p.category !== cat)];
 }
 const remaining = (p) => (Number(p.total) || 0) - used(p);
 const expired = (p) => p.expiry && p.expiry < ymd();
@@ -208,9 +216,10 @@ function fieldHTML(f, v, ctx) {
       input = `<div class="chips" data-name="${f.k}">${[...f.options, ...extra].map((o) => `<button type="button" class="chip${vals.includes(o) ? ' on' : ''}" data-v="${esc(o)}">${esc(o)}</button>`).join('')}${f.other ? '<button type="button" class="chip add" data-add>＋ 其他</button>' : ''}</div>`; break;
     }
     case 'purchase': {
-      const pkgs = DB.byMember('purchases', ctx.memberId).filter((p) => f.any || p.category === f.cat);
+      const mine = DB.byMember('purchases', ctx.memberId);
+      const pkgs = [...mine.filter((p) => p.category === f.cat), ...mine.filter((p) => p.category !== f.cat)];
       const opts = pkgs.filter((p) => p.id === v || (remaining(p) > 0 && !expired(p)) || (f.any && !f.active));
-      if (v === undefined && (!f.any || f.active)) { v = activePkgs(ctx.memberId, f.cat)[0]?.id || ''; }
+      if (v === undefined && (!f.any || f.active)) { v = sortedPkgs(ctx.memberId, f.cat)[0]?.id || ''; }
       input = `<select id="${id}" name="${f.k}"><option value="">${f.noneLabel || (f.any ? '（不指定）' : '不扣課程（單次付費／體驗）')}</option>${opts.map((p) => `<option value="${p.id}"${p.id === v ? ' selected' : ''}>${esc(p.name)}・剩 ${remaining(p)} 堂${p.expiry ? '・到期 ' + p.expiry : ''}</option>`).join('')}</select>`; break;
     }
     case 'member': {
@@ -355,6 +364,10 @@ function editRecord(store, rec = {}, ctx = {}) {
     const data = readForm(form, fields);
     const saved = await DB.save(store, { ...rec, ...data, ...(ctx.memberId && store !== 'members' && store !== 'appointments' ? { memberId: ctx.memberId } : {}) });
     for (const ph of newPhotos) await DB.save('photos', { ...ph, memberId: saved.id, uploadedAt: new Date().toISOString() });
+    if (store === 'appointments' && saved.status === '已完成' && !saved.recordId) {
+      await completeAppointment(saved);
+      toast('預約已完成，已自動扣 1 堂');
+    }
     closeModal();
     toast('已儲存' + (navigator.onLine ? '' : '（離線，連網後自動上傳）'));
     if (ctx.after) ctx.after(saved);
@@ -443,22 +456,70 @@ function photosTab(memberId) {
 }
 
 // ================= 客戶簽到表 =================
-// 簽到 → 會員手寫簽名 → 若有選課程，自動建立一筆上課／服務紀錄並扣 1 堂
+// 簽到手寫板：選好項目和課程，會員直接在板子上簽名 → 按「確認簽到」→ 自動扣 1 堂
+const CK_TYPES = ['健身', '芳療按摩', '其他'];
+const typeCat = (t) => (t === '健身' ? 'fitness' : t === '芳療按摩' ? 'massage' : null);
+
+function pkgOptions(memberId, cat, selected) {
+  const pk = sortedPkgs(memberId, cat);
+  return `<option value="">不扣堂（體驗／單次付費）</option>${pk.map((p) => `<option value="${p.id}"${p.id === selected ? ' selected' : ''}>${esc(p.name)}・剩 ${remaining(p)} 堂</option>`).join('')}`;
+}
+
 function newCheckin(memberId) {
   const first = activePkgs(memberId)[0];
-  editRecord('checkins', { type: first && first.category === 'massage' ? '芳療按摩' : '健身' }, { memberId, after: async (c) => {
-    if (c.purchaseId && !c.recordId) {
-      const p = DB.get('purchases', c.purchaseId);
-      const store = p && p.category === 'fitness' ? 'sessions' : 'services';
-      const r = await DB.save(store, { memberId, date: c.date, time: c.time, purchaseId: c.purchaseId, note: '（簽到自動建立）', checkinId: c.id });
-      c = await DB.save('checkins', { ...c, recordId: r.id, recordStore: store, nth: used(p), total: Number(p.total) || 0 });
+  let type = first && first.category === 'massage' ? '芳療按摩' : '健身';
+  const now = new Date();
+  const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const sheet = openModal(`
+    <header class="sheet-head"><button type="button" class="btn ghost" data-cancel>取消</button><h2>會員簽到</h2><button type="button" class="btn primary" data-ok>確認簽到</button></header>
+    <div class="ck-top">
+      <div class="ck-who"><b>${esc(memberName(memberId))}</b><span class="muted">${fmtDate(ymd())} ${time}</span></div>
+      <div class="chips ck-type">${CK_TYPES.map((t) => `<button type="button" class="chip${t === type ? ' on' : ''}" data-type="${t}">${t}</button>`).join('')}</div>
+      <select class="ck-pkg">${pkgOptions(memberId, typeCat(type), activePkgs(memberId, typeCat(type))[0]?.id || '')}</select>
+      <div class="ck-left muted"></div>
+    </div>
+    <div class="sigwrap ck-pad"><canvas class="sigpad"></canvas><div class="sigline">請會員在此簽名</div></div>
+    <div class="center"><button type="button" class="btn ghost" data-clear>清除重簽</button></div>`, { wide: true });
+  const padObj = setupPad($('canvas', sheet));
+  const sel = $('.ck-pkg', sheet);
+  const showLeft = () => {
+    const p = sel.value && DB.get('purchases', sel.value);
+    $('.ck-left', sheet).innerHTML = p ? `簽到後：第 <b>${used(p) + 1}</b> 堂，剩 <b>${remaining(p) - 1}</b> 堂` : '這次不扣堂數';
+  };
+  showLeft();
+  sel.addEventListener('change', showLeft);
+  sheet.addEventListener('click', async (e) => {
+    const t = e.target.closest('[data-type]');
+    if (t) {
+      type = t.dataset.type;
+      $$('[data-type]', sheet).forEach((b) => b.classList.toggle('on', b === t));
+      sel.innerHTML = pkgOptions(memberId, typeCat(type), activePkgs(memberId, typeCat(type))[0]?.id || '');
+      showLeft();
     }
-    const sig = await signaturePad(`會員簽到：${memberName(memberId)}`);
-    if (sig) c = await DB.save('checkins', { ...c, signature: sig, signedAt: new Date().toISOString() });
-    memberTab = 'checkins';
-    render();
-    toast(sig ? '簽到完成' : '已簽到（尚未簽名，可點該筆補簽）');
-  } });
+    if (e.target.closest('[data-clear]')) padObj.clear();
+    if (e.target.closest('[data-cancel]')) closeModal();
+    if (e.target.closest('[data-ok]')) {
+      if (!padObj.dirty()) { toast('請會員先簽名'); return; }
+      const signature = padObj.image();
+      let c = await DB.save('checkins', { memberId, date: ymd(), time, type, purchaseId: sel.value, signature, signedAt: new Date().toISOString() });
+      c = await linkCheckinRecord(c);
+      closeModal();
+      memberTab = 'checkins';
+      render();
+      const p = c.purchaseId && DB.get('purchases', c.purchaseId);
+      toast(p ? `簽到完成：${p.name} 剩 ${remaining(p)} 堂` : '簽到完成（未扣堂）');
+    }
+  });
+}
+
+// 有選課程時，自動建立上課／服務紀錄（就是這筆紀錄讓剩餘堂數減 1）
+async function linkCheckinRecord(c) {
+  if (!c.purchaseId || c.recordId) return c;
+  const p = DB.get('purchases', c.purchaseId);
+  if (!p) return c;
+  const store = c.type === '芳療按摩' || (c.type !== '健身' && p.category === 'massage') ? 'services' : 'sessions';
+  const r = await DB.save(store, { memberId: c.memberId, date: c.date, time: c.time, purchaseId: c.purchaseId, note: '（簽到自動建立）', checkinId: c.id, ...(store === 'services' ? { item: '精油芳療按摩' } : {}) });
+  return DB.save('checkins', { ...c, recordId: r.id, recordStore: store, nth: used(p), total: (Number(p.total) || 0) });
 }
 
 function viewCheckin(id) {
@@ -481,7 +542,14 @@ function viewCheckin(id) {
     </div>`, { wide: true });
   sheet.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) closeModal();
-    if (e.target.closest('[data-edit]')) editRecord('checkins', c, { memberId: c.memberId, after: (s2) => viewCheckin(s2.id) });
+    if (e.target.closest('[data-edit]')) editRecord('checkins', c, { memberId: c.memberId, after: async (s2) => {
+      const r = s2.recordId && DB.get(s2.recordStore, s2.recordId);
+      if (r && (r.purchaseId !== s2.purchaseId || r.date !== s2.date)) {
+        if (s2.purchaseId) await DB.save(s2.recordStore, { ...r, purchaseId: s2.purchaseId, date: s2.date, time: s2.time });
+        else { await DB.remove(s2.recordStore, r.id); s2 = await DB.save('checkins', { ...s2, recordId: '', nth: null }); }
+      } else if (!r && s2.purchaseId) s2 = await linkCheckinRecord({ ...s2, recordId: '' });
+      viewCheckin(s2.id);
+    } });
     if (e.target.closest('[data-rec]')) { const r = DB.get(c.recordStore, c.recordId); if (r) editRecord(c.recordStore, r, { memberId: c.memberId }); else toast('對應的紀錄已被刪除'); }
     if (e.target.closest('[data-sign]')) {
       const sig = await signaturePad(`會員簽到：${memberName(c.memberId)}`);
@@ -527,6 +595,16 @@ function printCheckins(memberId) {
     </table></article>`, `${m.name}_簽到表`);
 }
 
+// 預約完成 → 自動建立上課／服務紀錄並扣 1 堂
+async function completeAppointment(a) {
+  if (a.recordId && DB.get(a.recordStore, a.recordId)) return DB.get(a.recordStore, a.recordId);
+  const store = a.type === '健身' ? 'sessions' : 'services';
+  const pk = sortedPkgs(a.memberId, typeCat(a.type))[0];
+  const r = await DB.save(store, { memberId: a.memberId, date: a.date, time: a.time, duration: a.duration, purchaseId: pk ? pk.id : '', appointmentId: a.id, note: '（預約完成自動建立）' });
+  await DB.save('appointments', { ...a, status: '已完成', recordId: r.id, recordStore: store });
+  return r;
+}
+
 // ================= 合約與簽名 =================
 function fillTemplate(memberId, p, vals = {}) {
   const m = member(memberId) || {};
@@ -538,6 +616,44 @@ function fillTemplate(memberId, p, vals = {}) {
   return Object.entries(map).reduce((s, [k, v]) => s.split(k).join(String(v)), SETTINGS.contractTemplate);
 }
 
+// 手寫板：手指或 Apple Pencil 都可以寫
+function setupPad(cv) {
+  const ctx = cv.getContext('2d');
+  const ratio = Math.max(window.devicePixelRatio || 1, 2);
+  const rect = cv.getBoundingClientRect();
+  cv.width = rect.width * ratio; cv.height = rect.height * ratio;
+  ctx.scale(ratio, ratio);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1d2a22';
+  let drawing = false, last = null, dirty = false;
+  const pos = (e) => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top, p: e.pressure || 0.5 }; };
+  cv.addEventListener('pointerdown', (e) => { e.preventDefault(); cv.setPointerCapture(e.pointerId); drawing = true; last = pos(e); });
+  cv.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    e.preventDefault();
+    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of events) {
+      const pt = pos(ev);
+      ctx.lineWidth = e.pointerType === 'pen' ? 1.4 + pt.p * 3.2 : 3;
+      ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(pt.x, pt.y); ctx.stroke();
+      last = pt; dirty = true;
+    }
+  });
+  const end = () => { drawing = false; };
+  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+  return {
+    dirty: () => dirty,
+    clear: () => { ctx.clearRect(0, 0, cv.width, cv.height); dirty = false; },
+    // 縮小存檔，減少資料量
+    image: () => {
+      const out = document.createElement('canvas');
+      const w = Math.min(900, rect.width * 2); out.width = w; out.height = w * rect.height / rect.width;
+      const o = out.getContext('2d'); o.fillStyle = '#fff'; o.fillRect(0, 0, out.width, out.height);
+      o.drawImage(cv, 0, 0, out.width, out.height);
+      return out.toDataURL('image/jpeg', 0.8);
+    },
+  };
+}
+
 function signaturePad(title) {
   return new Promise((resolve) => {
     const sheet = openModal(`
@@ -545,40 +661,13 @@ function signaturePad(title) {
       <p class="muted center">請在下方框內簽名（可用手指或 Apple Pencil）</p>
       <div class="sigwrap"><canvas class="sigpad"></canvas><div class="sigline">簽名處</div></div>
       <div class="center"><button type="button" class="btn ghost" data-clear>清除重簽</button></div>`, { wide: true });
-    const cv = $('canvas', sheet);
-    const ctx = cv.getContext('2d');
-    const ratio = Math.max(window.devicePixelRatio || 1, 2);
-    const rect = cv.getBoundingClientRect();
-    cv.width = rect.width * ratio; cv.height = rect.height * ratio;
-    ctx.scale(ratio, ratio);
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1d2a22';
-    let drawing = false, last = null, dirty = false;
-    const pos = (e) => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top, p: e.pressure || 0.5 }; };
-    cv.addEventListener('pointerdown', (e) => { e.preventDefault(); cv.setPointerCapture(e.pointerId); drawing = true; last = pos(e); });
-    cv.addEventListener('pointermove', (e) => {
-      if (!drawing) return;
-      e.preventDefault();
-      const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-      for (const ev of events) {
-        const p = pos(ev);
-        ctx.lineWidth = e.pointerType === 'pen' ? 1.2 + p.p * 3 : 2.6;
-        ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
-        last = p; dirty = true;
-      }
-    });
-    const end = () => { drawing = false; };
-    cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+    const pad = setupPad($('canvas', sheet));
     sheet.addEventListener('click', (e) => {
-      if (e.target.closest('[data-clear]')) { ctx.clearRect(0, 0, cv.width, cv.height); dirty = false; }
+      if (e.target.closest('[data-clear]')) pad.clear();
       if (e.target.closest('[data-cancel]')) { closeModal(); resolve(null); }
       if (e.target.closest('[data-ok]')) {
-        if (!dirty) { toast('還沒有簽名喔'); return; }
-        // 縮小存檔，減少資料量
-        const out = document.createElement('canvas');
-        const w = Math.min(900, rect.width * 2); out.width = w; out.height = w * rect.height / rect.width;
-        const o = out.getContext('2d'); o.fillStyle = '#fff'; o.fillRect(0, 0, out.width, out.height);
-        o.drawImage(cv, 0, 0, out.width, out.height);
-        const data = out.toDataURL('image/jpeg', 0.8);
+        if (!pad.dirty()) { toast('還沒有簽名喔'); return; }
+        const data = pad.image();
         closeModal(); resolve(data);
       }
     });
@@ -1017,9 +1106,10 @@ const actions = {
   week: (d) => { if (+d.d === 0) calStart = null; else calStart = addDays(calStart, +d.d); render(); },
   complete: async (d) => {
     const a = DB.get('appointments', d.id);
-    await DB.save('appointments', { ...a, status: '已完成' });
+    const r = await completeAppointment(a);
     const store = a.type === '健身' ? 'sessions' : 'services';
-    editRecord(store, { date: a.date, time: a.time, duration: a.duration }, { memberId: a.memberId, after: () => toast('已記錄') });
+    // 打開自動建立的紀錄，補上課程內容
+    editRecord(store, DB.get(store, r.id), { memberId: a.memberId, after: () => toast('已記錄') });
   },
   csv: (d) => download(`${SETTINGS.studioName}_${TITLES[d.store]}_${ymd()}.csv`, toCSV(d.store), 'text/csv;charset=utf-8'),
   backup: () => download(`${SETTINGS.studioName}_完整備份_${ymd()}.json`, JSON.stringify(DB.exportAll()), 'application/json'),
