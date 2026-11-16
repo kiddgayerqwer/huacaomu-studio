@@ -1,7 +1,7 @@
 import * as DB from './db.js';
 import * as Sync from './sync.js';
 
-const APP_VERSION = '2026.11.16-6';
+const APP_VERSION = '2026.11.16-7';
 
 // ================= 小工具 =================
 const $ = (s, el = document) => el.querySelector(s);
@@ -759,11 +759,8 @@ function safeRender() {
 views.home = () => {
   const today = ymd();
   const month = today.slice(0, 7);
-  const appts = DB.all('appointments').filter((a) => a.date === today && a.status !== '取消').sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-  const upcoming = DB.all('appointments').filter((a) => a.date > today && a.date <= addDays(today, 7) && a.status === '已預約').sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   const pk = DB.all('purchases').filter((p) => member(p.memberId));
   const low = pk.filter((p) => !expired(p) && remaining(p) > 0 && remaining(p) <= 2);
-  const soon = pk.filter((p) => remaining(p) > 0 && p.expiry && p.expiry >= today && p.expiry <= addDays(today, 30));
   const unpaid = pk.filter((p) => owed(p) > 0);
   const mm = today.slice(5, 7);
   const bdays = DB.all('members').filter((m) => (m.birthday || '').slice(5, 7) === mm);
@@ -774,7 +771,6 @@ views.home = () => {
     return lastAct && lastAct < addDays(today, -30) && activePkgs(m.id).length;
   });
 
-  const apptRow = (a) => `<a class="row" href="#/member/${a.memberId}"><span class="time">${a.date !== today ? fmtDate(a.date).slice(5) + ' ' : ''}${esc(a.time)}</span><span class="grow"><b>${esc(memberName(a.memberId))}</b> <span class="pill ${a.type === '健身' ? 'fit' : 'spa'}">${esc(a.type || '')}</span></span><span class="muted">${esc(apptStatus(a))}</span></a>`;
   const pkRow = (p, extra) => `<a class="row" href="#/member/${p.memberId}"><span class="grow"><b>${esc(memberName(p.memberId))}</b>・${esc(p.name)}</span><span class="muted">${extra}</span></a>`;
 
   return `
@@ -788,10 +784,7 @@ views.home = () => {
     <div class="stat"><span>本月芳療服務</span><b>${servicesM}</b></div>
   </section>
   <div class="cols">
-    <section class="card"><h3>今日預約</h3>${appts.length ? appts.map(apptRow).join('') : empty('今天沒有預約')}</section>
-    <section class="card"><h3>未來 7 天</h3>${upcoming.length ? upcoming.map(apptRow).join('') : empty('沒有預約')}</section>
     <section class="card warn"><h3>堂數快用完（≤2 堂）</h3>${low.length ? low.map((p) => pkRow(p, `剩 ${remaining(p)} 堂`)).join('') : empty('沒有')}</section>
-    <section class="card warn"><h3>30 天內到期</h3>${soon.length ? soon.map((p) => pkRow(p, `${p.expiry} 到期・剩 ${remaining(p)} 堂`)).join('') : empty('沒有')}</section>
     ${unpaid.length ? `<section class="card warn"><h3>尚有未付款</h3>${unpaid.map((p) => pkRow(p, `欠 ${money(owed(p))}`)).join('')}</section>` : ''}
     ${inactive.length ? `<section class="card"><h3>超過 30 天沒來（還有剩餘堂數）</h3>${inactive.map((m) => `<a class="row" href="#/member/${m.id}"><span class="grow"><b>${esc(m.name)}</b></span><span class="muted">${esc(m.phone)}</span></a>`).join('')}</section>` : ''}
     <section class="card"><h3>本月壽星 🎂</h3>${bdays.length ? bdays.map((m) => `<a class="row" href="#/member/${m.id}"><span class="grow"><b>${esc(m.name)}</b></span><span class="muted">${m.birthday.slice(5).replace('-', '/')}</span></a>`).join('') : empty('沒有')}</section>
