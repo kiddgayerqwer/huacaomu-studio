@@ -1,7 +1,7 @@
 import * as DB from './db.js';
 import * as Sync from './sync.js';
 
-const APP_VERSION = '2026.11.16-4';
+const APP_VERSION = '2026.11.16-5';
 
 // ================= 小工具 =================
 const $ = (s, el = document) => el.querySelector(s);
@@ -780,7 +780,6 @@ views.home = () => {
   return `
   <section class="hero home-hero">
     <img class="wreath" src="icons/logo-wreath.png" alt="${esc(SETTINGS.studioName)}">
-    <p class="muted">${fmtDate(today)}</p>
     <div class="hero-actions"><button class="btn primary" data-act="newMember">＋ 新增會員</button><button class="btn" data-act="newAppt">＋ 新增預約</button></div>
   </section>
   <section class="stats">
