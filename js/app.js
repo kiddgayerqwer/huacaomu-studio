@@ -934,6 +934,20 @@ document.addEventListener('click', (e) => {
   actions[el.dataset.act]?.(el.dataset);
 });
 
+// 在輸入框按 Enter（或注音選字確認）時，不要自動送出表單；改成跳到下一格
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const t = e.target;
+  if (!t.matches || !t.matches('input') || ['submit', 'button', 'file', 'checkbox', 'radio'].includes(t.type)) return;
+  const form = t.closest('form');
+  if (!form) return;
+  e.preventDefault();
+  if (e.isComposing || e.keyCode === 229) return; // 正在選字
+  const fields = $$('input:not([type=hidden]):not([type=file]), textarea, select', form).filter((x) => !x.disabled && x.offsetParent !== null);
+  const next = fields[fields.indexOf(t) + 1];
+  if (next) next.focus(); else t.blur();
+}, true);
+
 let composing = false;
 document.addEventListener('compositionstart', () => { composing = true; });
 document.addEventListener('compositionend', (e) => { composing = false; if (e.target.matches('[data-search]')) updateSearch(e.target); });
