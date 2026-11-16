@@ -1,7 +1,7 @@
 import * as DB from './db.js';
 import * as Sync from './sync.js';
 
-const APP_VERSION = '2026.11.16-3';
+const APP_VERSION = '2026.11.16-4';
 
 // ================= 小工具 =================
 const $ = (s, el = document) => el.querySelector(s);
@@ -46,7 +46,7 @@ const OPT = {
   pressure: ['輕', '中', '中重', '重'],
   focus: ['上肢', '下肢', '核心', '全身', '有氧/心肺', '伸展/活動度', '體態矯正', '減脂', '增肌'],
   apptType: ['健身', '芳療按摩', '其他'],
-  apptStatus: ['已預約', '已完成', '取消', '未到'],
+  apptStatus: ['已預約', '取消', '未到'],
   oils: ['薰衣草', '甜橙', '佛手柑', '尤加利', '薄荷', '迷迭香', '茶樹', '乳香', '依蘭', '天竺葵', '玫瑰', '檀香', '杜松', '葡萄柚', '洋甘菊', '甜杏仁油(基底)', '荷荷芭油(基底)'],
 };
 
@@ -211,7 +211,7 @@ function fieldHTML(f, v, ctx) {
     case 'textarea':
       input = `<textarea id="${id}" name="${f.k}" rows="${f.rows || 3}"${ph}${req}>${esc(v)}</textarea>`; break;
     case 'select':
-      input = `<select id="${id}" name="${f.k}"${req}><option value="">—</option>${f.options.map((o) => `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(f.labels ? f.labels[o] : o)}</option>`).join('')}</select>`; break;
+      input = `<select id="${id}" name="${f.k}"${req}><option value="">—</option>${(v && !f.options.includes(v) ? [...f.options, v] : f.options).map((o) => `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(f.labels ? f.labels[o] : o)}</option>`).join('')}</select>`; break;
     case 'chips': {
       const vals = Array.isArray(v) ? v : [];
       const extra = vals.filter((x) => !f.options.includes(x));
@@ -367,11 +367,6 @@ function editRecord(store, rec = {}, ctx = {}) {
     const saved = await DB.save(store, { ...rec, ...data, ...(ctx.memberId && store !== 'members' && store !== 'appointments' ? { memberId: ctx.memberId } : {}) });
     for (const ph of newPhotos) await DB.save('photos', { ...ph, memberId: saved.id, uploadedAt: new Date().toISOString() });
     let msg = '已儲存' + (navigator.onLine ? '' : '（離線，連網後自動上傳）');
-    if (store === 'appointments' && saved.status === '已完成' && !saved.recordId) {
-      const r = await completeAppointment(saved);
-      const p = r.purchaseId && DB.get('purchases', r.purchaseId);
-      msg = p ? `預約已完成，${p.name} 扣 1 堂，剩 ${remaining(p)} 堂` : '預約已完成（這位會員沒有可扣的課程）';
-    }
     closeModal();
     toast(msg);
     if (ctx.after) ctx.after(saved);
@@ -469,7 +464,7 @@ function pkgOptions(memberId, cat, selected) {
   return `<option value="">不扣堂（體驗／單次付費）</option>${pk.map((p) => `<option value="${p.id}"${p.id === selected ? ' selected' : ''}>${esc(p.name)}・剩 ${remaining(p)} 堂</option>`).join('')}`;
 }
 
-function newCheckin(memberId) {
+function newCheckin(memberId, appointmentId) {
   const first = activePkgs(memberId)[0];
   let type = first && first.category === 'massage' ? '芳療按摩' : '健身';
   const now = new Date();
@@ -507,8 +502,11 @@ function newCheckin(memberId) {
       const signature = padObj.image();
       let c = await DB.save('checkins', { memberId, date: ymd(), time, type, purchaseId: sel.value, signature, signedAt: new Date().toISOString() });
       c = await linkCheckinRecord(c);
+      const appt = (appointmentId && DB.get('appointments', appointmentId))
+        || DB.all('appointments').find((a) => a.memberId === memberId && a.date === c.date && a.status === '已預約' && !a.checkinId);
+      if (appt) await DB.save('appointments', { ...appt, checkinId: c.id });
       closeModal();
-      memberTab = 'checkins';
+      if (location.hash.startsWith('#/member/')) memberTab = 'checkins';
       render();
       const p = c.purchaseId && DB.get('purchases', c.purchaseId);
       toast(p ? `簽到完成：${p.name} 剩 ${remaining(p)} 堂` : '簽到完成（未扣堂）');
@@ -599,15 +597,8 @@ function printCheckins(memberId) {
     </table></article>`, `${m.name}_簽到表`);
 }
 
-// 預約完成 → 自動建立上課／服務紀錄並扣 1 堂
-async function completeAppointment(a) {
-  if (a.recordId && DB.get(a.recordStore, a.recordId)) return DB.get(a.recordStore, a.recordId);
-  const store = a.type === '健身' ? 'sessions' : 'services';
-  const pk = sortedPkgs(a.memberId, typeCat(a.type))[0];
-  const r = await DB.save(store, { memberId: a.memberId, date: a.date, time: a.time, duration: a.duration, purchaseId: pk ? pk.id : '', appointmentId: a.id, note: '（預約完成自動建立）' });
-  await DB.save('appointments', { ...a, status: '已完成', recordId: r.id, recordStore: store });
-  return r;
-}
+// 預約顯示用狀態：當天已簽到的預約顯示「已簽到」
+const apptStatus = (a) => (a.checkinId && DB.get('checkins', a.checkinId) ? '已簽到' : a.status || '');
 
 // ================= 合約與簽名 =================
 function fillTemplate(memberId, p, vals = {}) {
@@ -783,7 +774,7 @@ views.home = () => {
     return lastAct && lastAct < addDays(today, -30) && activePkgs(m.id).length;
   });
 
-  const apptRow = (a) => `<a class="row" href="#/member/${a.memberId}"><span class="time">${a.date !== today ? fmtDate(a.date).slice(5) + ' ' : ''}${esc(a.time)}</span><span class="grow"><b>${esc(memberName(a.memberId))}</b> <span class="pill ${a.type === '健身' ? 'fit' : 'spa'}">${esc(a.type || '')}</span></span><span class="muted">${esc(a.status)}</span></a>`;
+  const apptRow = (a) => `<a class="row" href="#/member/${a.memberId}"><span class="time">${a.date !== today ? fmtDate(a.date).slice(5) + ' ' : ''}${esc(a.time)}</span><span class="grow"><b>${esc(memberName(a.memberId))}</b> <span class="pill ${a.type === '健身' ? 'fit' : 'spa'}">${esc(a.type || '')}</span></span><span class="muted">${esc(apptStatus(a))}</span></a>`;
   const pkRow = (p, extra) => `<a class="row" href="#/member/${p.memberId}"><span class="grow"><b>${esc(memberName(p.memberId))}</b>・${esc(p.name)}</span><span class="muted">${extra}</span></a>`;
 
   return `
@@ -896,7 +887,7 @@ views.member = (id) => {
   } else if (tab === 'photos') {
     body = photosTab(id);
   } else if (tab === 'appointments') {
-    body = appts.length ? appts.map((a) => `<div class="rec" data-act="edit" data-store="appointments" data-id="${a.id}"><div class="rec-head"><b>${fmtDate(a.date)} ${esc(a.time)}</b><span class="pill ${a.type === '健身' ? 'fit' : 'spa'}">${esc(a.type || '')}</span><span class="grow"></span><span>${esc(a.status)}</span></div>${a.note ? `<div>${nl2br(a.note)}</div>` : ''}</div>`).join('') : empty('還沒有預約');
+    body = appts.length ? appts.map((a) => `<div class="rec" data-act="edit" data-store="appointments" data-id="${a.id}"><div class="rec-head"><b>${fmtDate(a.date)} ${esc(a.time)}</b><span class="pill ${a.type === '健身' ? 'fit' : 'spa'}">${esc(a.type || '')}</span><span class="grow"></span><span>${esc(apptStatus(a))}</span></div>${a.note ? `<div>${nl2br(a.note)}</div>` : ''}</div>`).join('') : empty('還沒有預約');
   }
 
   const addMap = { purchases: '＋ 買課', sessions: '＋ 上課紀錄', services: '＋ 服務紀錄', contracts: '＋ 合約', measurements: '＋ 身體數據', photos: '＋ 體態照片', checkins: '✍️ 簽到', appointments: '＋ 預約' };
@@ -962,7 +953,7 @@ views.calendar = () => {
   <div class="week">${days.map((d) => {
     const list = appts.filter((a) => a.date === d).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
     return `<div class="day${d === today ? ' today' : ''}"><div class="day-h">${WEEK[new Date(d + 'T00:00').getDay()]} <b>${+d.slice(8)}</b><button class="mini" data-act="newAppt" data-date="${d}">＋</button></div>
-      ${list.map((a) => `<div class="appt ${a.type === '健身' ? 'fit' : 'spa'} ${a.status === '取消' ? 'cancel' : ''}" data-act="edit" data-store="appointments" data-id="${a.id}"><b>${esc(a.time)}</b> ${esc(memberName(a.memberId))}<small>${esc(a.type || '')}・${esc(a.status)}</small>${a.status === '已預約' && a.date <= today ? `<button class="mini done" data-act="complete" data-id="${a.id}">✓ 完成並記錄</button>` : ''}</div>`).join('') || '<div class="muted small">—</div>'}
+      ${list.map((a) => `<div class="appt ${a.type === '健身' ? 'fit' : 'spa'} ${a.status === '取消' ? 'cancel' : ''}" data-act="edit" data-store="appointments" data-id="${a.id}"><b>${esc(a.time)}</b> ${esc(memberName(a.memberId))}<small>${esc(a.type || '')}・${esc(apptStatus(a))}</small>${a.status === '已預約' && !apptStatus(a).startsWith('已簽') && a.date <= today ? `<button class="mini done" data-act="apptCheckin" data-id="${a.id}">✍️ 簽到</button>` : ''}</div>`).join('') || '<div class="muted small">—</div>'}
     </div>`;
   }).join('')}</div>`;
 };
@@ -1109,13 +1100,7 @@ const actions = {
   tab: (d) => { memberTab = d.tab; render(); },
   viewContract: (d) => viewContract(d.id),
   week: (d) => { if (+d.d === 0) calStart = null; else calStart = addDays(calStart, +d.d); render(); },
-  complete: async (d) => {
-    const a = DB.get('appointments', d.id);
-    const r = await completeAppointment(a);
-    const store = a.type === '健身' ? 'sessions' : 'services';
-    // 打開自動建立的紀錄，補上課程內容
-    editRecord(store, DB.get(store, r.id), { memberId: a.memberId, after: () => toast('已記錄') });
-  },
+  apptCheckin: (d) => { const a = DB.get('appointments', d.id); if (a) newCheckin(a.memberId, a.id); },
   csv: (d) => download(`${SETTINGS.studioName}_${TITLES[d.store]}_${ymd()}.csv`, toCSV(d.store), 'text/csv;charset=utf-8'),
   backup: () => download(`${SETTINGS.studioName}_完整備份_${ymd()}.json`, JSON.stringify(DB.exportAll()), 'application/json'),
   syncNow: async () => { await Sync.syncNow(); toast(syncText(Sync.status)); render(); },
