@@ -1,6 +1,8 @@
 import * as DB from './db.js';
 import * as Sync from './sync.js';
 
+const APP_VERSION = '2026.11.16-3';
+
 // ================= 小工具 =================
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -133,7 +135,7 @@ const F = {
   appointments: [
     { k: 'memberId', label: '會員', type: 'member', required: true },
     { k: 'date', label: '日期', type: 'date', def: () => ymd(), required: true },
-    { k: 'time', label: '時間', type: 'time', required: true },
+    { k: 'time', label: '時間', type: 'time', def: () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; } },
     { k: 'duration', label: '時長（分鐘）', type: 'number', def: 60 },
     { k: 'type', label: '類型', type: 'select', options: OPT.apptType },
     { k: 'status', label: '狀態', type: 'select', options: OPT.apptStatus, def: '已預約' },
@@ -364,12 +366,14 @@ function editRecord(store, rec = {}, ctx = {}) {
     const data = readForm(form, fields);
     const saved = await DB.save(store, { ...rec, ...data, ...(ctx.memberId && store !== 'members' && store !== 'appointments' ? { memberId: ctx.memberId } : {}) });
     for (const ph of newPhotos) await DB.save('photos', { ...ph, memberId: saved.id, uploadedAt: new Date().toISOString() });
+    let msg = '已儲存' + (navigator.onLine ? '' : '（離線，連網後自動上傳）');
     if (store === 'appointments' && saved.status === '已完成' && !saved.recordId) {
-      await completeAppointment(saved);
-      toast('預約已完成，已自動扣 1 堂');
+      const r = await completeAppointment(saved);
+      const p = r.purchaseId && DB.get('purchases', r.purchaseId);
+      msg = p ? `預約已完成，${p.name} 扣 1 堂，剩 ${remaining(p)} 堂` : '預約已完成（這位會員沒有可扣的課程）';
     }
     closeModal();
-    toast('已儲存' + (navigator.onLine ? '' : '（離線，連網後自動上傳）'));
+    toast(msg);
     if (ctx.after) ctx.after(saved);
   });
 }
@@ -1028,6 +1032,7 @@ views.settings = () => {
   <section class="card"><h3>📱 安裝到 iPad 主畫面</h3>
     <p>用 Safari 開啟本網站 → 點上方「分享」按鈕 → 選「加入主畫面」。之後從主畫面開啟，就像 App 一樣，沒有網路也能使用。</p>
     <p class="muted small">儲存空間：<span id="storage-info">計算中…</span></p>
+    <p class="muted small">App 版本：${APP_VERSION}</p>
   </section>`;
 };
 
