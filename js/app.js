@@ -1,7 +1,7 @@
 import * as DB from './db.js';
 import * as Sync from './sync.js';
 
-const APP_VERSION = '2026.11.16-7';
+const APP_VERSION = '2026.11.16-8';
 
 // ================= 小工具 =================
 const $ = (s, el = document) => el.querySelector(s);
@@ -756,6 +756,34 @@ function safeRender() {
   render();
 }
 
+// 超過一個月沒有上課／服務／簽到紀錄的會員（從沒上過課的，以加入日起算）
+function inactiveMembers() {
+  const cutoff = addDays(ymd(), -30);
+  return DB.all('members').map((m) => {
+    const last = [...DB.byMember('sessions', m.id), ...DB.byMember('services', m.id), ...DB.byMember('checkins', m.id)]
+      .map((x) => x.date || '').filter(Boolean).sort().pop() || '';
+    const since = last || (m.createdAt || '').slice(0, 10);
+    return { m, last, since };
+  }).filter((x) => x.since && x.since < cutoff).sort((a, b) => a.since.localeCompare(b.since));
+}
+const daysSince = (d) => Math.floor((new Date(ymd()) - new Date(d)) / 86400000);
+const inactiveRow = ({ m, last, since }) => `<a class="row" href="#/member/${m.id}"><span class="grow"><b>${esc(m.name)}</b> <span class="muted">${esc(m.phone || '')}</span></span><span class="muted">${last ? `最後上課 ${last.slice(5).replace('-', '/')}・${daysSince(since)} 天` : `加入 ${daysSince(since)} 天還沒上課`}</span></a>`;
+
+// 每天第一次打開 App 時，跳出「超過一個月沒上課」提醒
+function remindInactive() {
+  const today = ymd();
+  let shown = '';
+  try { shown = localStorage.getItem('inactiveReminded') || ''; } catch (e) { /* 無法存取就每次都提醒 */ }
+  if (shown === today) return;
+  const list = inactiveMembers();
+  if (!list.length || $('#modal').classList.contains('open')) return;
+  try { localStorage.setItem('inactiveReminded', today); } catch (e) { /* ignore */ }
+  const el = openModal(`
+    <header class="sheet-head"><span></span><h2>🔔 會員上課提醒</h2><button type="button" class="btn primary" data-close>知道了</button></header>
+    <div class="sheet-body"><p>以下 ${list.length} 位會員已經超過一個月沒有上課紀錄，可以關心一下：</p>${list.map(inactiveRow).join('')}</div>`);
+  el.addEventListener('click', (e) => { if (e.target.closest('[data-close]') || e.target.closest('a.row')) closeModal(); });
+}
+
 views.home = () => {
   const today = ymd();
   const month = today.slice(0, 7);
@@ -766,10 +794,7 @@ views.home = () => {
   const bdays = DB.all('members').filter((m) => (m.birthday || '').slice(5, 7) === mm);
   const sessionsM = DB.all('sessions').filter((s) => (s.date || '').startsWith(month)).length;
   const servicesM = DB.all('services').filter((s) => (s.date || '').startsWith(month)).length;
-  const inactive = DB.all('members').filter((m) => {
-    const lastAct = [...DB.byMember('sessions', m.id), ...DB.byMember('services', m.id)].map((x) => x.date).sort().pop();
-    return lastAct && lastAct < addDays(today, -30) && activePkgs(m.id).length;
-  });
+  const inactive = inactiveMembers();
 
   const pkRow = (p, extra) => `<a class="row" href="#/member/${p.memberId}"><span class="grow"><b>${esc(memberName(p.memberId))}</b>・${esc(p.name)}</span><span class="muted">${extra}</span></a>`;
 
@@ -786,7 +811,7 @@ views.home = () => {
   <div class="cols">
     <section class="card warn"><h3>堂數快用完（≤2 堂）</h3>${low.length ? low.map((p) => pkRow(p, `剩 ${remaining(p)} 堂`)).join('') : empty('沒有')}</section>
     ${unpaid.length ? `<section class="card warn"><h3>尚有未付款</h3>${unpaid.map((p) => pkRow(p, `欠 ${money(owed(p))}`)).join('')}</section>` : ''}
-    ${inactive.length ? `<section class="card"><h3>超過 30 天沒來（還有剩餘堂數）</h3>${inactive.map((m) => `<a class="row" href="#/member/${m.id}"><span class="grow"><b>${esc(m.name)}</b></span><span class="muted">${esc(m.phone)}</span></a>`).join('')}</section>` : ''}
+    <section class="card warn"><h3>超過一個月沒上課${inactive.length ? `（${inactive.length} 位）` : ''}</h3>${inactive.length ? inactive.map(inactiveRow).join('') : empty('沒有')}</section>
     <section class="card"><h3>本月壽星 🎂</h3>${bdays.length ? bdays.map((m) => `<a class="row" href="#/member/${m.id}"><span class="grow"><b>${esc(m.name)}</b></span><span class="muted">${m.birthday.slice(5).replace('-', '/')}</span></a>`).join('') : empty('沒有')}</section>
   </div>`;
 };
@@ -1198,6 +1223,8 @@ async function start() {
   window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#/member/')) memberTab = 'overview'; render(); });
   updateSyncBadge();
   render();
+  setTimeout(remindInactive, 800);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(remindInactive, 800); });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(console.error);
   if (navigator.storage?.estimate) {
     setInterval(async () => {
