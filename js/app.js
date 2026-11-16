@@ -225,7 +225,8 @@ function fieldHTML(f, v, ctx) {
     default:
       input = `<input id="${id}" name="${f.k}" type="${f.type}" value="${esc(v)}"${f.type === 'number' ? ' inputmode="decimal" step="any"' : ''}${ph}${req}>`;
   }
-  return `<label class="field${f.wide ? ' wide' : ''}"><span>${esc(f.label)}${f.required ? ' <b>*</b>' : ''}</span>${input}${f.hint ? `<small>${esc(f.hint)}</small>` : ''}</label>`;
+  const tag = ['chips', 'exercises', 'photos'].includes(f.type) ? 'div' : 'label';
+  return `<${tag} class="field${f.wide ? ' wide' : ''}"><span>${esc(f.label)}${f.required ? ' <b>*</b>' : ''}</span>${input}${f.hint ? `<small>${esc(f.hint)}</small>` : ''}</${tag}>`;
 }
 const exRow = (e = {}) => `<div class="ex-row"><input placeholder="例：深蹲" value="${esc(e.name)}" list="exlist"><input placeholder="kg" value="${esc(e.weight)}"><input placeholder="次" inputmode="numeric" value="${esc(e.reps)}"><input placeholder="組" inputmode="numeric" value="${esc(e.sets)}"><button type="button" class="x" data-delex>✕</button></div>`;
 
@@ -258,6 +259,7 @@ function closeModal() {
   m.classList.remove('open');
   m.innerHTML = '';
   document.body.classList.remove('noscroll');
+  if (renderPending) setTimeout(safeRender, 50);
 }
 
 function editRecord(store, rec = {}, ctx = {}) {
@@ -558,6 +560,18 @@ function render() {
 
 const empty = (t) => `<div class="empty">${t}</div>`;
 
+// 背景同步更新資料時用：正在打字或表單打開時先不重畫（重畫會讓 iPad 鍵盤收起來）
+let renderPending = false;
+function isEditing() {
+  const a = document.activeElement;
+  return !!a && a !== document.body && a.matches('input, textarea, select, [contenteditable="true"]');
+}
+function safeRender() {
+  if ($('#modal').classList.contains('open') || isEditing()) { renderPending = true; return; }
+  renderPending = false;
+  render();
+}
+
 views.home = () => {
   const today = ymd();
   const month = today.slice(0, 7);
@@ -603,14 +617,16 @@ views.home = () => {
 };
 
 let memberQuery = '';
-views.members = () => {
+views.members = () => `
+  <section class="page-head"><h1>會員</h1><button class="btn primary" data-act="newMember">＋ 新增會員</button></section>
+  <input class="search" type="search" placeholder="搜尋姓名、電話、標籤…" value="${esc(memberQuery)}" data-search>
+  <div class="member-list">${memberListHTML()}</div>`;
+
+function memberListHTML() {
   const q = memberQuery.toLowerCase();
   const ms = DB.all('members').filter((m) => !q || [m.name, m.phone, m.tags, m.line, m.email].join(' ').toLowerCase().includes(q))
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
-  return `
-  <section class="page-head"><h1>會員</h1><button class="btn primary" data-act="newMember">＋ 新增會員</button></section>
-  <input class="search" type="search" placeholder="搜尋姓名、電話、標籤…" value="${esc(memberQuery)}" data-search>
-  <div class="member-list">${ms.length ? ms.map((m) => {
+  return `${ms.length ? ms.map((m) => {
     const pk = activePkgs(m.id);
     return `<a class="member-card" href="#/member/${m.id}">
       <div class="avatar">${esc((m.name || '?').slice(0, 1))}</div>
@@ -618,8 +634,8 @@ views.members = () => {
       <div class="tags">${(m.tags || '').split(/[,，、]/).filter((t) => t.trim()).map((t) => `<span class="tag">${esc(t.trim())}</span>`).join('')}</div></div>
       <div class="right">${pk.map((p) => `<span class="pill ${p.category === 'fitness' ? 'fit' : 'spa'}">${CATS[p.category] || ''} 剩 ${remaining(p)}</span>`).join('')}</div>
     </a>`;
-  }).join('') : empty(DB.all('members').length ? '找不到符合的會員' : '還沒有會員，點右上角「新增會員」開始吧')}</div>`;
-};
+  }).join('') : empty(DB.all('members').length ? '找不到符合的會員' : '還沒有會員，點右上角「新增會員」開始吧')}`;
+}
 
 let memberTab = 'overview';
 views.member = (id) => {
@@ -918,14 +934,17 @@ document.addEventListener('click', (e) => {
   actions[el.dataset.act]?.(el.dataset);
 });
 
+let composing = false;
+document.addEventListener('compositionstart', () => { composing = true; });
+document.addEventListener('compositionend', (e) => { composing = false; if (e.target.matches('[data-search]')) updateSearch(e.target); });
 document.addEventListener('input', (e) => {
-  if (e.target.matches('[data-search]')) {
-    memberQuery = e.target.value;
-    const pos = e.target.selectionStart;
-    render();
-    const s = $('[data-search]'); s.focus(); try { s.setSelectionRange(pos, pos); } catch (err) { /* */ }
-  }
+  if (e.target.matches('[data-search]') && !composing) updateSearch(e.target);
 });
+function updateSearch(input) {
+  memberQuery = input.value;
+  const list = $('.member-list');
+  if (list) list.innerHTML = memberListHTML();
+}
 
 document.addEventListener('change', async (e) => {
   if (e.target.matches('[data-quick-photo]')) {
@@ -975,9 +994,9 @@ async function start() {
   await Sync.init();
   DB.onChange(() => {
     loadSettings();
-    // 表單打開時不重畫，避免打字中被打斷
-    if (!$('#modal').classList.contains('open')) render();
+    safeRender();
   });
+  document.addEventListener('focusout', () => setTimeout(() => { if (renderPending) safeRender(); }, 300));
   Sync.onStatus(() => {
     updateSyncBadge();
     const el = $('#sync-text');

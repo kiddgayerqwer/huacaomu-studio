@@ -168,9 +168,9 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 16px 40px; }
 /* modal & forms */
 #modal { position: fixed; inset: 0; z-index: 50; background: rgba(30,40,32,.38); display: none; align-items: flex-end; justify-content: center; }
 #modal.open { display: flex; }
-.sheet { background: var(--bg); width: 100%; max-width: 640px; max-height: 94vh; overflow-y: auto; border-radius: 18px 18px 0 0; padding: 0 18px calc(env(safe-area-inset-bottom) + 24px); -webkit-overflow-scrolling: touch; }
+.sheet { background: var(--bg); width: 100%; max-width: 640px; max-height: 94vh; max-height: 94dvh; overflow-y: auto; border-radius: 18px 18px 0 0; padding: 0 18px calc(env(safe-area-inset-bottom) + 24px); -webkit-overflow-scrolling: touch; }
 .sheet.wide { max-width: 900px; }
-@media (min-width: 821px) { #modal { align-items: center; } .sheet { border-radius: 18px; max-height: 90vh; } }
+@media (min-width: 821px) { #modal { align-items: center; } .sheet { border-radius: 18px; max-height: 90vh; max-height: 90dvh; } }
 .sheet-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); margin-bottom: 14px; }
 .sheet-head h2 { text-align: center; flex: 1; font-size: 17px; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
