@@ -1,7 +1,7 @@
 import * as DB from './db.js';
 import * as Sync from './sync.js';
 
-const APP_VERSION = '2026.11.25-1';
+const APP_VERSION = '2026.11.25-2';
 
 // ================= 小工具 =================
 const $ = (s, el = document) => el.querySelector(s);
@@ -1444,6 +1444,7 @@ async function start() {
   window.addEventListener('online', updateSyncBadge);
   window.addEventListener('offline', updateSyncBadge);
   window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#/member/')) memberTab = 'overview'; render(); });
+  $('#app-version').textContent = '版本 ' + APP_VERSION;
   updateSyncBadge();
   render();
   setTimeout(remindInactive, 800);

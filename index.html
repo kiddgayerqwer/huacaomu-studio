@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/logo.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="css/style.css?v=16">
+  <link rel="stylesheet" href="css/style.css?v=17">
 </head>
 <body>
   <header class="topbar">
@@ -24,7 +24,10 @@
       <a href="#/reports" data-r="reports"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10h4v10zm6 0V4h4v16zm6 0v-7h4v7z"/></svg>統計</a>
       <a href="#/settings" data-r="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 8.5zm9 4.6v-2.2l-2.4-.6a7 7 0 0 0-.7-1.6l1.3-2.1-1.6-1.6-2.1 1.3a7 7 0 0 0-1.6-.7L13.3 3h-2.2l-.6 2.4a7 7 0 0 0-1.6.7L6.8 4.8 5.2 6.4l1.3 2.1a7 7 0 0 0-.7 1.6l-2.4.6v2.2l2.4.6c.2.6.4 1.1.7 1.6l-1.3 2.1 1.6 1.6 2.1-1.3c.5.3 1 .5 1.6.7l.6 2.4h2.2l.6-2.4c.6-.2 1.1-.4 1.6-.7l2.1 1.3 1.6-1.6-1.3-2.1c.3-.5.5-1 .7-1.6z"/></svg>設定</a>
     </nav>
-    <a href="#/settings" id="sync-badge" class="sync off">只存本機</a>
+    <div class="top-right">
+      <a href="#/settings" id="sync-badge" class="sync off">只存本機</a>
+      <span id="app-version" class="app-ver"></span>
+    </div>
   </header>
   <main id="main"><div class="empty">載入中…</div></main>
   <div id="modal"></div>
@@ -36,6 +39,6 @@
     <option>伏地挺身</option><option>棒式</option><option>側棒式</option><option>死蟲</option><option>鳥狗</option><option>壺鈴擺盪</option>
     <option>農夫走路</option><option>二頭彎舉</option><option>三頭下壓</option><option>側平舉</option><option>登階</option><option>跑步機</option><option>飛輪</option><option>划船機</option>
   </datalist>
-  <script type="module" src="js/app.js?v=16"></script>
+  <script type="module" src="js/app.js?v=17"></script>
 </body>
 </html>

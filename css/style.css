@@ -333,3 +333,7 @@ h1, h3 { color: var(--olive-text); }
   .price-row.head { display: none; }
   .ck-spa { grid-template-columns: 1fr 110px; }
 }
+
+/* 右上角版本號：確認 App 是否更新成功 */
+.top-right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
+.app-ver { font-size: 11px; color: var(--muted); letter-spacing: .02em; white-space: nowrap; }
