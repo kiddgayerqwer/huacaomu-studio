@@ -1,7 +1,7 @@
 import * as DB from './db.js';
 import * as Sync from './sync.js';
 
-const APP_VERSION = '2026.11.25-2';
+const APP_VERSION = '2026.11.25-3';
 
 // ================= 小工具 =================
 const $ = (s, el = document) => el.querySelector(s);
@@ -130,7 +130,7 @@ const F = {
     { k: 'time', label: '時間', type: 'time' },
     { k: 'item', label: '服務項目', type: 'select', get options() { return spaItems().map((i) => i.name); } },
     { k: 'duration', label: '時長（分鐘）', type: 'number' },
-    { k: 'payType', label: '付款方式', type: 'select', options: Object.keys(PAY), labels: PAY, required: true },
+    { k: 'payType', label: '付款方式', type: 'select', options: ['wallet', 'cash'], labels: PAY, required: true },
     { k: 'purchaseId', label: '扣抵課程', type: 'purchase', cat: 'massage' },
     { k: 'price', label: '金額', type: 'number' },
     { k: 'method', label: '收款方式', type: 'select', options: OPT.method, def: '現金' },
@@ -431,9 +431,9 @@ function serviceDefaults(vals, memberId, isNew) {
     if (vals.price === undefined && it.price != null) vals.price = it.price;
     if (vals.duration === undefined && it.minutes) vals.duration = it.minutes;
   }
-  const pk = activePkgs(memberId, 'massage')[0];
-  if (vals.payType === undefined) vals.payType = pk ? 'package' : balance(memberId) > 0 ? 'wallet' : 'cash';
-  if (vals.purchaseId === undefined) vals.purchaseId = pk ? pk.id : '';
+  // 芳療不扣堂數：有儲值金餘額就預設扣儲值金，沒有就現金
+  if (vals.payType === undefined) vals.payType = balance(memberId) > 0 ? 'wallet' : 'cash';
+  if (vals.purchaseId === undefined) vals.purchaseId = '';
 }
 
 function setupServiceForm(form, rec, memberId) {
@@ -569,25 +569,22 @@ const CK_TYPES = ['健身', '芳療按摩', '其他'];
 const typeCat = (t) => (t === '健身' ? 'fitness' : t === '芳療按摩' ? 'massage' : null);
 
 function pkgOptions(memberId, cat, selected) {
-  const pk = sortedPkgs(memberId, cat);
+  const pk = sortedPkgs(memberId, cat).filter((p) => p.category !== 'massage'); // 芳療不扣堂數
   const opt = (v, l) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`;
   const pkgs = pk.map((p) => opt(p.id, `${esc(p.name)}・剩 ${remaining(p)} 堂`)).join('');
   if (cat !== 'massage') return opt('', '不扣堂（體驗／單次付費）') + pkgs;
-  // 芳療：可以扣課程堂數、扣儲值金，或現金單次付費
-  return pkgs + opt('wallet', `儲值金扣款（餘額 ${money(balance(memberId))}）`) + opt('cash', '現金／單次付費') + opt('', '不收費（體驗）');
+  // 芳療不扣堂數：只用儲值金扣款或現金單次付費
+  return opt('wallet', `儲值金扣款（餘額 ${money(balance(memberId))}）`) + opt('cash', '現金／單次付費') + opt('', '不收費（體驗）');
 }
 // 簽到時預設的扣款方式
 function defaultPay(memberId, cat) {
-  const pk = activePkgs(memberId, cat)[0];
-  if (pk) return pk.id;
   if (cat === 'massage') return balance(memberId) > 0 ? 'wallet' : 'cash';
-  return '';
+  return activePkgs(memberId, cat)[0]?.id || '';
 }
 const ckPayText = (c, p) => (c.pay === 'wallet' ? `儲值金 −${money(c.price)}` : c.pay === 'cash' ? `現金 ${money(c.price)}` : p ? esc(p.name) : '不扣堂');
 
 function newCheckin(memberId, appointmentId) {
-  const first = activePkgs(memberId)[0];
-  let type = (first ? first.category === 'massage' : balance(memberId) > 0) ? '芳療按摩' : '健身';
+  let type = !activePkgs(memberId, 'fitness').length && hasWallet(memberId) ? '芳療按摩' : '健身';
   const now = new Date();
   const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const sheet = openModal(`
