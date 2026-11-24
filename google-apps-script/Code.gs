@@ -16,16 +16,19 @@ const CHUNK = 45000; // 每格最多 50000 字，資料太大時分多格存放
 const MAX_CHUNKS = 20;
 
 const LABELS = {
-  members: ['會員', { name: '姓名', phone: '電話', gender: '性別', birthday: '生日', email: 'Email', line: 'LINE', address: '地址', emergency: '緊急聯絡人', joinDate: '入會日期', source: '來源', height: '身高', occupation: '職業', goals: '目標', health: '身體狀況/禁忌', allergy: '過敏', tags: '標籤', note: '備註' }],
+  members: ['會員', { name: '姓名', phone: '電話', gender: '性別', birthday: '生日', email: 'Email', line: 'LINE', address: '地址', emergency: '緊急聯絡人', joinDate: '入會日期', source: '來源', height: '身高', occupation: '職業', goals: '目標', health: '身體狀況/禁忌', allergy: '過敏', tags: '標籤', _wallet: '儲值金餘額', note: '備註' }],
   purchases: ['買課紀錄', { _member: '會員', category: '類別', name: '方案名稱', total: '堂數', usedBefore: '轉入前已上', _used: '已用', _left: '剩餘', price: '金額', paid: '已付', method: '付款方式', date: '購買日期', expiry: '到期日', note: '備註' }],
   sessions: ['上課紀錄', { _member: '會員', date: '日期', time: '時間', duration: '分鐘', _pkg: '扣抵課程', focus: '訓練重點', exercises: '訓練內容', condition: '當天狀況', rpe: 'RPE', homework: '回家功課', note: '備註' }],
-  services: ['服務紀錄', { _member: '會員', date: '日期', time: '時間', duration: '分鐘', _pkg: '扣抵課程', item: '服務項目', price: '單次收費', oils: '精油', blend: '調油配方', areas: '部位', pressure: '力道', before: '服務前', after: '服務後', advice: '居家建議', note: '備註' }],
+  topups: ['儲值紀錄', { _member: '會員', date: '儲值日期', plan: '儲值方案', amount: '儲值金額', bonus: '贈送金額', _credit: '入帳金額', method: '付款方式', note: '備註' }],
+  services: ['服務紀錄', { _member: '會員', date: '日期', time: '時間', duration: '分鐘', item: '服務項目', _pay: '付款方式', _pkg: '扣抵課程', price: '金額', method: '收款方式', oils: '精油', blend: '調油配方', areas: '部位', pressure: '力道', before: '服務前', after: '服務後', advice: '居家建議', note: '備註' }],
   contracts: ['合約', { _member: '會員', title: '合約名稱', start: '開始日', end: '結束日', amount: '金額', _signed: '會員已簽名', signedAt: '簽署時間' }],
   appointments: ['預約', { _member: '會員', date: '日期', time: '時間', duration: '分鐘', type: '類型', status: '狀態', note: '備註' }],
   checkins: ['簽到表', { _member: '會員', date: '日期', time: '時間', type: '項目', _pkg: '扣抵課程', _nth: '堂次', _signed: '已簽名', note: '備註' }],
   measurements: ['身體數據', { _member: '會員', date: '日期', weight: '體重', bodyFat: '體脂%', muscle: '肌肉量', visceral: '內臟脂肪', chest: '胸圍', waist: '腰圍', hip: '臀圍', arm: '上臂', thigh: '大腿', bp: '血壓', note: '備註' }],
 };
 const CATS = { fitness: '健身', massage: '芳療按摩', other: '其他' };
+const PAY = { wallet: '儲值金扣款', cash: '現金／單次付費', package: '扣課程堂數' };
+function payOf_(s) { return s.payType || (s.purchaseId ? 'package' : 'cash'); }
 
 // ================= 設定 =================
 function setup() {
@@ -179,12 +182,22 @@ function helpers_(all) {
   (all.purchases || []).forEach(function (p) { pkgs[p.id] = p; });
   const usedCount = {};
   (all.sessions || []).concat(all.services || []).forEach(function (s) { if (s.purchaseId) usedCount[s.purchaseId] = (usedCount[s.purchaseId] || 0) + 1; });
-  return { members: members, pkgs: pkgs, used: function (p) { return (Number(p.usedBefore) || 0) + (usedCount[p.id] || 0); } };
+  // 儲值金餘額 = 儲值（含贈送）− 用儲值金扣款的芳療服務
+  const wallet = {};
+  (all.topups || []).forEach(function (t) { wallet[t.memberId] = (wallet[t.memberId] || 0) + (Number(t.amount) || 0) + (Number(t.bonus) || 0); });
+  (all.services || []).forEach(function (s) { if (payOf_(s) === 'wallet') wallet[s.memberId] = (wallet[s.memberId] || 0) - (Number(s.price) || 0); });
+  return { members: members, pkgs: pkgs, wallet: wallet, used: function (p) { return (Number(p.usedBefore) || 0) + (usedCount[p.id] || 0); } };
 }
 
 function cell_(store, k, r, h) {
   if (k === '_member') return h.members[r.memberId] ? h.members[r.memberId].name : '';
+  if (k === '_pkg' && store === 'checkins' && r.pay === 'wallet') return '儲值金 -' + (Number(r.price) || 0);
+  if (k === '_pkg' && store === 'checkins' && r.pay === 'cash') return '現金 ' + (Number(r.price) || 0);
+  if (k === '_pkg' && store === 'services' && payOf_(r) !== 'package') return '';
   if (k === '_pkg') return h.pkgs[r.purchaseId] ? h.pkgs[r.purchaseId].name : (r.purchaseId ? '' : '單次');
+  if (k === '_pay') return PAY[payOf_(r)];
+  if (k === '_wallet') return h.wallet[r.id] === undefined ? '' : h.wallet[r.id];
+  if (k === '_credit') return (Number(r.amount) || 0) + (Number(r.bonus) || 0);
   if (k === '_used') return h.used(r);
   if (k === '_left') return (Number(r.total) || 0) - h.used(r);
   if (k === '_signed') return (r.memberSig || r.signature) ? '是' : '否';
@@ -201,6 +214,9 @@ function rebuildTabs_(ss, stores) {
   const h = helpers_(all);
   // 買課的剩餘堂數會因上課/服務改變
   if (stores.indexOf('sessions') >= 0 || stores.indexOf('services') >= 0) stores.push('purchases');
+  // 會員分頁的儲值金餘額會因儲值或芳療扣款改變
+  if (stores.indexOf('topups') >= 0 || stores.indexOf('services') >= 0) stores.push('members');
+  stores = stores.filter(function (s, i) { return stores.indexOf(s) === i; });
   stores.forEach(function (store) {
     if (!LABELS[store]) return;
     const name = LABELS[store][0], cols = LABELS[store][1];
@@ -318,7 +334,8 @@ function memberHtml_(m, by, h, studio) {
         return '<tr><td>' + (i + 1) + '</td><td>' + e_(c.date) + '</td><td>' + e_(c.time) + '</td><td>' + e_(c.type) + '</td><td>' + e_(cell_('checkins', '_pkg', c, h)) + '</td><td>' + e_(cell_('checkins', '_nth', c, h)) + '</td><td>' + (c.signature ? '<img src="' + c.signature + '" style="height:40px">' : '') + '</td></tr>';
       }).join('') + '</table>';
   }
-  html += section('purchases', '買課紀錄') + section('sessions', '上課紀錄') + section('services', '服務紀錄') + section('measurements', '身體數據') + section('appointments', '預約');
+  if (h.wallet[m.id] !== undefined) html += '<h3>芳療儲值金餘額：NT$ ' + Number(h.wallet[m.id]).toLocaleString() + '</h3>';
+  html += section('purchases', '買課紀錄') + section('topups', '儲值紀錄') + section('sessions', '上課紀錄') + section('services', '服務紀錄') + section('measurements', '身體數據') + section('appointments', '預約');
   html += '<p style="text-align:right;color:#888">更新時間：' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm') + '</p>';
   return html;
 }

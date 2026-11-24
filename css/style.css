@@ -310,3 +310,26 @@ h1, h3 { color: var(--olive-text); }
 .ck-left { font-size: 15px; }
 .ck-left b { color: var(--spa); font-size: 18px; }
 .ck-pad .sigpad { height: min(48vh, 420px); }
+
+/* ===== 芳療儲值金與價格設定 ===== */
+.field[hidden], .ck-spa[hidden] { display: none !important; }
+.pay-info { display: block; margin-top: 2px; }
+.ck-spa { display: grid; grid-template-columns: 1fr 140px; gap: 10px; align-items: end; }
+.ck-price { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--muted); }
+.price-rows { display: grid; gap: 8px; margin: 8px 0; }
+.price-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px 110px 32px; gap: 8px; align-items: center; }
+.price-row.head span { font-size: 13px; color: var(--muted); }
+.price-row input { min-width: 0; }
+.price-row .x { border: 0; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
+.card h4 { margin: 18px 0 4px; color: var(--olive-text); }
+.wallet-sum { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.wallet-sum > span:first-child { color: var(--olive-text); font-weight: 600; }
+.wallet-sum b { font-size: 28px; color: var(--spa); }
+.wallet-sum b.red { color: var(--red); }
+@media (max-width: 560px) {
+  .price-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .price-row input[name=n] { grid-column: 1 / 3; }
+  .price-row .x { grid-column: 3; grid-row: 1; }
+  .price-row.head { display: none; }
+  .ck-spa { grid-template-columns: 1fr 110px; }
+}
