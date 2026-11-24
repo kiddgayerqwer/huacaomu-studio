@@ -1,7 +1,7 @@
 import * as DB from './db.js';
 import * as Sync from './sync.js';
 
-const APP_VERSION = '2026.11.16-8';
+const APP_VERSION = '2026.11.25-1';
 
 // ================= 小工具 =================
 const $ = (s, el = document) => el.querySelector(s);
@@ -37,6 +37,13 @@ function download(name, content, type) {
 
 // ================= 選項 =================
 const CATS = { fitness: '健身', massage: '芳療按摩', other: '其他' };
+// 芳療付款方式：儲值金扣款／現金單次／扣課程堂數
+const PAY = { wallet: '儲值金扣款', cash: '現金／單次付費', package: '扣課程堂數' };
+const DEFAULT_SPA_ITEMS = [
+  { name: '芳療按摩 1 小時', minutes: 60, price: 1500 },
+  { name: '芳療按摩 2 小時', minutes: 120, price: 2500 },
+];
+const DEFAULT_TOPUP_PLANS = [{ name: '儲值 10,000', amount: 10000, bonus: 0 }];
 const OPT = {
   gender: ['女', '男', '其他'],
   source: ['朋友介紹', 'Instagram', 'Facebook', 'Google', 'LINE', '路過', '其他'],
@@ -54,6 +61,8 @@ const DEFAULT_SETTINGS = {
   studioName: '花草沐studio',
   studioPhone: '',
   studioAddress: '',
+  spaItems: DEFAULT_SPA_ITEMS,
+  topupPlans: DEFAULT_TOPUP_PLANS,
   contractTemplate: `立契約書人
 甲方（會員）：{會員姓名}
 乙方（工作室）：{工作室名稱}
@@ -119,10 +128,12 @@ const F = {
   services: [
     { k: 'date', label: '日期', type: 'date', def: () => ymd(), required: true },
     { k: 'time', label: '時間', type: 'time' },
-    { k: 'duration', label: '時長（分鐘）', type: 'number', def: 90 },
+    { k: 'item', label: '服務項目', type: 'select', get options() { return spaItems().map((i) => i.name); } },
+    { k: 'duration', label: '時長（分鐘）', type: 'number' },
+    { k: 'payType', label: '付款方式', type: 'select', options: Object.keys(PAY), labels: PAY, required: true },
     { k: 'purchaseId', label: '扣抵課程', type: 'purchase', cat: 'massage' },
-    { k: 'item', label: '服務項目', type: 'select', options: OPT.serviceItem, def: '精油芳療按摩' },
-    { k: 'price', label: '單次收費（沒有扣課程時）', type: 'number' },
+    { k: 'price', label: '金額', type: 'number' },
+    { k: 'method', label: '收款方式', type: 'select', options: OPT.method, def: '現金' },
     { k: 'oils', label: '使用精油', type: 'chips', options: OPT.oils, wide: true, other: true },
     { k: 'blend', label: '調油配方', type: 'text', wide: true, ph: '例：薰衣草 3 滴 + 甜橙 2 滴 + 甜杏仁油 10ml' },
     { k: 'areas', label: '按摩部位', type: 'chips', options: OPT.areas, wide: true },
@@ -130,6 +141,14 @@ const F = {
     { k: 'before', label: '服務前狀況', type: 'textarea', wide: true, ph: '例：右肩緊繃、頭痛、睡不好' },
     { k: 'after', label: '服務後反饋', type: 'textarea', wide: true },
     { k: 'advice', label: '居家建議', type: 'textarea', wide: true },
+    { k: 'note', label: '備註', type: 'textarea', wide: true },
+  ],
+  topups: [
+    { k: 'plan', label: '儲值方案', type: 'select', get options() { return topupPlans().map((t) => t.name); }, hint: '選方案會自動帶入金額，也可以直接填金額' },
+    { k: 'date', label: '儲值日期', type: 'date', def: () => ymd(), required: true },
+    { k: 'amount', label: '儲值金額（實收）', type: 'number', required: true },
+    { k: 'bonus', label: '贈送金額', type: 'number', hint: '例：儲值 1 萬送 1 千就填 1000，沒有就留空' },
+    { k: 'method', label: '付款方式', type: 'select', options: OPT.method },
     { k: 'note', label: '備註', type: 'textarea', wide: true },
   ],
   appointments: [
@@ -172,7 +191,7 @@ const F = {
   ],
 };
 
-const TITLES = { members: '會員', purchases: '買課', sessions: '上課紀錄', services: '服務紀錄', contracts: '合約', appointments: '預約', measurements: '身體數據', photos: '體態照片', checkins: '簽到' };
+const TITLES = { members: '會員', purchases: '買課', topups: '儲值', sessions: '上課紀錄', services: '服務紀錄', contracts: '合約', appointments: '預約', measurements: '身體數據', photos: '體態照片', checkins: '簽到' };
 
 // ================= 計算 =================
 function used(p) {
@@ -195,10 +214,30 @@ const memberName = (id) => member(id)?.name || '（已刪除會員）';
 const owed = (p) => (p.paid === null || p.paid === undefined || p.paid === '' ? 0 : Math.max(0, (Number(p.price) || 0) - Number(p.paid)));
 const age = (b) => { if (!b) return ''; const d = new Date(b), n = new Date(); let a = n.getFullYear() - d.getFullYear(); if (n < new Date(n.getFullYear(), d.getMonth(), d.getDate())) a--; return a; };
 
-function revenueIn(prefix) {
-  const p = DB.all('purchases').filter((x) => (x.date || '').startsWith(prefix)).reduce((s, x) => s + (Number(x.price) || 0), 0);
-  const s = DB.all('services').filter((x) => !x.purchaseId && (x.date || '').startsWith(prefix)).reduce((s, x) => s + (Number(x.price) || 0), 0);
-  return p + s;
+// ---- 芳療服務項目與儲值金 ----
+const listOr = (v, d) => (Array.isArray(v) && v.length ? v : d).filter((x) => x && x.name);
+const spaItems = () => listOr(SETTINGS.spaItems, DEFAULT_SPA_ITEMS);
+const topupPlans = () => listOr(SETTINGS.topupPlans, []);
+const spaItem = (name) => spaItems().find((i) => i.name === name);
+// 舊資料沒有 payType：有扣課程的算扣堂，其餘算現金單次
+const payOf = (s) => s.payType || (s.purchaseId ? 'package' : 'cash');
+const walletUses = (memberId, exceptId) => DB.byMember('services', memberId).filter((s) => s.id !== exceptId && payOf(s) === 'wallet');
+const walletIn = (memberId) => DB.byMember('topups', memberId).reduce((s, t) => s + (Number(t.amount) || 0) + (Number(t.bonus) || 0), 0);
+const balance = (memberId, exceptId) => walletIn(memberId) - walletUses(memberId, exceptId).reduce((s, x) => s + (Number(x.price) || 0), 0);
+const hasWallet = (memberId) => DB.byMember('topups', memberId).length > 0 || walletUses(memberId).length > 0;
+const payText = (s) => {
+  const t = payOf(s);
+  if (t === 'wallet') return `儲值金 −${money(s.price)}`;
+  if (t === 'cash') return s.price ? `${esc(s.method || '現金')} ${money(s.price)}` : '單次';
+  const p = DB.get('purchases', s.purchaseId);
+  return p ? esc(p.name) : '扣堂';
+};
+// 營收 = 買課金額 + 儲值實收金額 + 現金單次服務（儲值金扣款不重複計算）
+const cashServices = (list) => list.filter((x) => payOf(x) === 'cash');
+const sumBy = (list, k) => list.reduce((s, x) => s + (Number(x[k]) || 0), 0);
+function revenueIn(prefix, memberId) {
+  const pick = (store) => (memberId ? DB.byMember(store, memberId) : DB.all(store)).filter((x) => (x.date || '').startsWith(prefix));
+  return sumBy(pick('purchases'), 'price') + sumBy(pick('topups'), 'amount') + sumBy(cashServices(pick('services')), 'price');
 }
 
 // ================= 表單 =================
@@ -244,7 +283,7 @@ function fieldHTML(f, v, ctx) {
       input = `<input id="${id}" name="${f.k}" type="${f.type}" value="${esc(v)}"${f.type === 'number' ? ' inputmode="decimal" step="any"' : ''}${ph}${req}>`;
   }
   const tag = ['chips', 'exercises', 'photos'].includes(f.type) ? 'div' : 'label';
-  return `<${tag} class="field${f.wide ? ' wide' : ''}"><span>${esc(f.label)}${f.required ? ' <b>*</b>' : ''}</span>${input}${f.hint ? `<small>${esc(f.hint)}</small>` : ''}</${tag}>`;
+  return `<${tag} class="field${f.wide ? ' wide' : ''}" data-k="${f.k}"><span>${esc(f.label)}${f.required ? ' <b>*</b>' : ''}</span>${input}${f.hint ? `<small>${esc(f.hint)}</small>` : ''}</${tag}>`;
 }
 const exRow = (e = {}) => `<div class="ex-row"><input placeholder="例：深蹲" value="${esc(e.name)}" list="exlist"><input placeholder="kg" value="${esc(e.weight)}"><input placeholder="次" inputmode="numeric" value="${esc(e.reps)}"><input placeholder="組" inputmode="numeric" value="${esc(e.sets)}"><button type="button" class="x" data-delex>✕</button></div>`;
 
@@ -284,6 +323,7 @@ function editRecord(store, rec = {}, ctx = {}) {
   const fields = F[store];
   const isNew = !rec.id;
   const vals = { ...rec };
+  if (store === 'services') serviceDefaults(vals, ctx.memberId, isNew);
   if (isNew) for (const f of fields) if (vals[f.k] === undefined && f.def !== undefined) vals[f.k] = typeof f.def === 'function' ? f.def() : f.def;
   if (store === 'contracts' && isNew && !vals.content) vals.content = fillTemplate(ctx.memberId, null, vals);
   const sheet = openModal(`
@@ -329,6 +369,14 @@ function editRecord(store, rec = {}, ctx = {}) {
     });
   }
 
+  if (store === 'services') setupServiceForm(form, rec, ctx.memberId);
+  if (store === 'topups') {
+    form.elements.namedItem('plan').addEventListener('change', (e) => {
+      const t = topupPlans().find((x) => x.name === e.target.value);
+      if (t) { form.elements.namedItem('amount').value = t.amount ?? ''; form.elements.namedItem('bonus').value = t.bonus || ''; }
+    });
+  }
+
   if (store === 'contracts') {
     const sync = () => {
       const pid = form.elements.purchaseId.value;
@@ -364,6 +412,7 @@ function editRecord(store, rec = {}, ctx = {}) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const data = readForm(form, fields);
+    if (store === 'services' && !checkService(data, rec, ctx.memberId)) return;
     const saved = await DB.save(store, { ...rec, ...data, ...(ctx.memberId && store !== 'members' && store !== 'appointments' ? { memberId: ctx.memberId } : {}) });
     for (const ph of newPhotos) await DB.save('photos', { ...ph, memberId: saved.id, uploadedAt: new Date().toISOString() });
     let msg = '已儲存' + (navigator.onLine ? '' : '（離線，連網後自動上傳）');
@@ -371,6 +420,66 @@ function editRecord(store, rec = {}, ctx = {}) {
     toast(msg);
     if (ctx.after) ctx.after(saved);
   });
+}
+
+// ================= 芳療服務：付款方式 =================
+function serviceDefaults(vals, memberId, isNew) {
+  if (!isNew) { vals.payType = payOf(vals); return; }
+  const it = spaItem(vals.item) || spaItems()[0];
+  if (it) {
+    if (vals.item === undefined) vals.item = it.name;
+    if (vals.price === undefined && it.price != null) vals.price = it.price;
+    if (vals.duration === undefined && it.minutes) vals.duration = it.minutes;
+  }
+  const pk = activePkgs(memberId, 'massage')[0];
+  if (vals.payType === undefined) vals.payType = pk ? 'package' : balance(memberId) > 0 ? 'wallet' : 'cash';
+  if (vals.purchaseId === undefined) vals.purchaseId = pk ? pk.id : '';
+}
+
+function setupServiceForm(form, rec, memberId) {
+  const el = (k) => form.elements.namedItem(k);
+  const wrap = (k) => $(`.field[data-k="${k}"]`, form);
+  const info = document.createElement('small');
+  info.className = 'pay-info';
+  wrap('price').append(info);
+  const update = () => {
+    const pt = el('payType').value;
+    wrap('purchaseId').hidden = pt !== 'package';
+    wrap('price').hidden = pt === 'package';
+    wrap('method').hidden = pt !== 'cash';
+    if (pt === 'wallet') {
+      const b = balance(memberId, rec.id), p = Number(el('price').value) || 0;
+      info.innerHTML = `目前儲值金餘額 ${money(b)}，扣款後剩 <b class="${b - p < 0 ? 'red' : ''}">${money(b - p)}</b>`;
+    } else info.textContent = '';
+  };
+  el('item').addEventListener('change', () => {
+    const it = spaItem(el('item').value);
+    if (it) {
+      if (it.price != null && it.price !== '') el('price').value = it.price;
+      if (it.minutes) el('duration').value = it.minutes;
+    }
+    update();
+  });
+  el('payType').addEventListener('change', () => {
+    if (el('payType').value === 'package' && !el('purchaseId').value) el('purchaseId').value = activePkgs(memberId, 'massage')[0]?.id || '';
+    update();
+  });
+  el('price').addEventListener('input', update);
+  update();
+}
+
+// 儲存前整理資料：只留下對應付款方式的欄位
+function checkService(data, rec, memberId) {
+  const pt = data.payType;
+  if (pt !== 'package') data.purchaseId = '';
+  if (pt !== 'cash') data.method = '';
+  if (pt === 'package' && !data.purchaseId) { alert('請選擇要扣堂數的課程，或改成其他付款方式'); return false; }
+  if ((pt === 'wallet' || pt === 'cash') && !(Number(data.price) > 0)) { alert('請填寫金額'); return false; }
+  if (pt === 'wallet') {
+    const left = balance(memberId, rec.id) - Number(data.price);
+    if (left < 0 && !confirm(`儲值金不足，扣款後餘額會是 ${money(left)}（欠款）。確定要儲存嗎？`)) return false;
+  }
+  return true;
 }
 
 // ================= 體態照片 =================
@@ -461,12 +570,24 @@ const typeCat = (t) => (t === '健身' ? 'fitness' : t === '芳療按摩' ? 'mas
 
 function pkgOptions(memberId, cat, selected) {
   const pk = sortedPkgs(memberId, cat);
-  return `<option value="">不扣堂（體驗／單次付費）</option>${pk.map((p) => `<option value="${p.id}"${p.id === selected ? ' selected' : ''}>${esc(p.name)}・剩 ${remaining(p)} 堂</option>`).join('')}`;
+  const opt = (v, l) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`;
+  const pkgs = pk.map((p) => opt(p.id, `${esc(p.name)}・剩 ${remaining(p)} 堂`)).join('');
+  if (cat !== 'massage') return opt('', '不扣堂（體驗／單次付費）') + pkgs;
+  // 芳療：可以扣課程堂數、扣儲值金，或現金單次付費
+  return pkgs + opt('wallet', `儲值金扣款（餘額 ${money(balance(memberId))}）`) + opt('cash', '現金／單次付費') + opt('', '不收費（體驗）');
 }
+// 簽到時預設的扣款方式
+function defaultPay(memberId, cat) {
+  const pk = activePkgs(memberId, cat)[0];
+  if (pk) return pk.id;
+  if (cat === 'massage') return balance(memberId) > 0 ? 'wallet' : 'cash';
+  return '';
+}
+const ckPayText = (c, p) => (c.pay === 'wallet' ? `儲值金 −${money(c.price)}` : c.pay === 'cash' ? `現金 ${money(c.price)}` : p ? esc(p.name) : '不扣堂');
 
 function newCheckin(memberId, appointmentId) {
   const first = activePkgs(memberId)[0];
-  let type = first && first.category === 'massage' ? '芳療按摩' : '健身';
+  let type = (first ? first.category === 'massage' : balance(memberId) > 0) ? '芳療按摩' : '健身';
   const now = new Date();
   const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const sheet = openModal(`
@@ -474,33 +595,52 @@ function newCheckin(memberId, appointmentId) {
     <div class="ck-top">
       <div class="ck-who"><b>${esc(memberName(memberId))}</b><span class="muted">${fmtDate(ymd())} ${time}</span></div>
       <div class="chips ck-type">${CK_TYPES.map((t) => `<button type="button" class="chip${t === type ? ' on' : ''}" data-type="${t}">${t}</button>`).join('')}</div>
-      <select class="ck-pkg">${pkgOptions(memberId, typeCat(type), activePkgs(memberId, typeCat(type))[0]?.id || '')}</select>
+      <select class="ck-pkg">${pkgOptions(memberId, typeCat(type), defaultPay(memberId, typeCat(type)))}</select>
+      <div class="ck-spa" hidden>
+        <select class="ck-item">${spaItems().map((i) => `<option value="${esc(i.name)}">${esc(i.name)}${i.price != null && i.price !== '' ? '・' + money(i.price) : ''}</option>`).join('')}</select>
+        <label class="ck-price"><span>金額</span><input type="number" inputmode="decimal" step="any" value="${spaItems()[0]?.price ?? ''}"></label>
+      </div>
       <div class="ck-left muted"></div>
     </div>
     <div class="sigwrap ck-pad"><canvas class="sigpad"></canvas><div class="sigline">請會員在此簽名</div></div>
     <div class="center"><button type="button" class="btn ghost" data-clear>清除重簽</button></div>`, { wide: true });
   const padObj = setupPad($('canvas', sheet));
   const sel = $('.ck-pkg', sheet);
+  const itemSel = $('.ck-item', sheet);
+  const priceIn = $('.ck-price input', sheet);
+  const isMoney = () => sel.value === 'wallet' || sel.value === 'cash';
   const showLeft = () => {
-    const p = sel.value && DB.get('purchases', sel.value);
-    $('.ck-left', sheet).innerHTML = p ? `簽到後：第 <b>${used(p) + 1}</b> 堂，剩 <b>${remaining(p) - 1}</b> 堂` : '這次不扣堂數';
+    const p = !isMoney() && sel.value && DB.get('purchases', sel.value);
+    $('.ck-spa', sheet).hidden = !isMoney();
+    const price = Number(priceIn.value) || 0;
+    let html = '這次不扣堂數';
+    if (p) html = `簽到後：第 <b>${used(p) + 1}</b> 堂，剩 <b>${remaining(p) - 1}</b> 堂`;
+    else if (sel.value === 'wallet') { const b = balance(memberId); html = `扣儲值金 <b>${money(price)}</b>，餘額 ${money(b)} → <b class="${b - price < 0 ? 'red' : ''}">${money(b - price)}</b>`; }
+    else if (sel.value === 'cash') html = `現金收費 <b>${money(price)}</b>`;
+    $('.ck-left', sheet).innerHTML = html;
   };
   showLeft();
   sel.addEventListener('change', showLeft);
+  itemSel.addEventListener('change', () => { const it = spaItem(itemSel.value); if (it && it.price != null && it.price !== '') priceIn.value = it.price; showLeft(); });
+  priceIn.addEventListener('input', showLeft);
   sheet.addEventListener('click', async (e) => {
     const t = e.target.closest('[data-type]');
     if (t) {
       type = t.dataset.type;
       $$('[data-type]', sheet).forEach((b) => b.classList.toggle('on', b === t));
-      sel.innerHTML = pkgOptions(memberId, typeCat(type), activePkgs(memberId, typeCat(type))[0]?.id || '');
+      sel.innerHTML = pkgOptions(memberId, typeCat(type), defaultPay(memberId, typeCat(type)));
       showLeft();
     }
     if (e.target.closest('[data-clear]')) padObj.clear();
     if (e.target.closest('[data-cancel]')) closeModal();
     if (e.target.closest('[data-ok]')) {
       if (!padObj.dirty()) { toast('請會員先簽名'); return; }
+      const pay = isMoney() ? sel.value : '';
+      const price = Number(priceIn.value) || 0;
+      if (pay && !(price > 0)) { toast('請填寫金額'); return; }
+      if (pay === 'wallet' && balance(memberId) - price < 0 && !confirm(`儲值金不足，扣款後餘額會是 ${money(balance(memberId) - price)}（欠款）。確定要簽到嗎？`)) return;
       const signature = padObj.image();
-      let c = await DB.save('checkins', { memberId, date: ymd(), time, type, purchaseId: sel.value, signature, signedAt: new Date().toISOString() });
+      let c = await DB.save('checkins', { memberId, date: ymd(), time, type, purchaseId: pay ? '' : sel.value, ...(pay ? { pay, item: itemSel.value, price } : {}), signature, signedAt: new Date().toISOString() });
       c = await linkCheckinRecord(c);
       const appt = (appointmentId && DB.get('appointments', appointmentId))
         || DB.all('appointments').find((a) => a.memberId === memberId && a.date === c.date && a.status === '已預約' && !a.checkinId);
@@ -509,18 +649,25 @@ function newCheckin(memberId, appointmentId) {
       if (location.hash.startsWith('#/member/')) memberTab = 'checkins';
       render();
       const p = c.purchaseId && DB.get('purchases', c.purchaseId);
-      toast(p ? `簽到完成：${p.name} 剩 ${remaining(p)} 堂` : '簽到完成（未扣堂）');
+      toast(p ? `簽到完成：${p.name} 剩 ${remaining(p)} 堂` : c.pay === 'wallet' ? `簽到完成：儲值金剩 ${money(balance(memberId))}` : c.pay === 'cash' ? `簽到完成：現金 ${money(c.price)}` : '簽到完成（未扣堂）');
     }
   });
 }
 
 // 有選課程時，自動建立上課／服務紀錄（就是這筆紀錄讓剩餘堂數減 1）
 async function linkCheckinRecord(c) {
-  if (!c.purchaseId || c.recordId) return c;
+  if (c.recordId) return c;
+  // 儲值金／現金：建立一筆芳療服務紀錄（儲值金餘額就是由這筆扣掉）
+  if (c.pay === 'wallet' || c.pay === 'cash') {
+    const it = spaItem(c.item);
+    const r = await DB.save('services', { memberId: c.memberId, date: c.date, time: c.time, item: c.item, duration: it?.minutes || null, payType: c.pay, price: c.price, method: c.pay === 'cash' ? '現金' : '', purchaseId: '', note: '（簽到自動建立）', checkinId: c.id });
+    return DB.save('checkins', { ...c, recordId: r.id, recordStore: 'services' });
+  }
+  if (!c.purchaseId) return c;
   const p = DB.get('purchases', c.purchaseId);
   if (!p) return c;
   const store = c.type === '芳療按摩' || (c.type !== '健身' && p.category === 'massage') ? 'services' : 'sessions';
-  const r = await DB.save(store, { memberId: c.memberId, date: c.date, time: c.time, purchaseId: c.purchaseId, note: '（簽到自動建立）', checkinId: c.id, ...(store === 'services' ? { item: '精油芳療按摩' } : {}) });
+  const r = await DB.save(store, { memberId: c.memberId, date: c.date, time: c.time, purchaseId: c.purchaseId, note: '（簽到自動建立）', checkinId: c.id, ...(store === 'services' ? { item: spaItems()[0]?.name || '芳療按摩', payType: 'package' } : {}) });
   return DB.save('checkins', { ...c, recordId: r.id, recordStore: store, nth: used(p), total: (Number(p.total) || 0) });
 }
 
@@ -533,7 +680,7 @@ function viewCheckin(id) {
     <dl class="info">
       <dt>日期</dt><dd>${fmtDate(c.date)} ${esc(c.time || '')}</dd>
       <dt>項目</dt><dd>${esc(c.type || '')}</dd>
-      <dt>課程</dt><dd>${p ? `${esc(p.name)}${c.nth ? `・第 ${c.nth} 堂／共 ${c.total} 堂` : ''}` : '不扣堂'}</dd>
+      <dt>${c.pay ? '付款' : '課程'}</dt><dd>${p ? `${esc(p.name)}${c.nth ? `・第 ${c.nth} 堂／共 ${c.total} 堂` : ''}` : `${ckPayText(c)}${c.item ? '・' + esc(c.item) : ''}`}</dd>
       ${c.note ? `<dt>備註</dt><dd>${esc(c.note)}</dd>` : ''}
     </dl>
     <div class="sigview">${c.signature ? `<img src="${c.signature}" alt="簽名">` : '<p class="muted center">尚未簽名</p>'}</div>
@@ -546,7 +693,15 @@ function viewCheckin(id) {
     if (e.target.closest('[data-close]')) closeModal();
     if (e.target.closest('[data-edit]')) editRecord('checkins', c, { memberId: c.memberId, after: async (s2) => {
       const r = s2.recordId && DB.get(s2.recordStore, s2.recordId);
-      if (r && (r.purchaseId !== s2.purchaseId || r.date !== s2.date)) {
+      if (r && s2.pay && !s2.purchaseId) {
+        // 儲值金／現金簽到：只同步日期時間（金額請到服務紀錄修改）
+        if (r.date !== s2.date || r.time !== s2.time) await DB.save(s2.recordStore, { ...r, date: s2.date, time: s2.time });
+      } else if (r && s2.pay && s2.purchaseId) {
+        // 改成扣課程堂數
+        await DB.save(s2.recordStore, { ...r, payType: 'package', purchaseId: s2.purchaseId, price: null, method: '', date: s2.date, time: s2.time });
+        const p2 = DB.get('purchases', s2.purchaseId);
+        s2 = await DB.save('checkins', { ...s2, pay: '', price: null, nth: p2 ? used(p2) : null, total: p2 ? Number(p2.total) || 0 : null });
+      } else if (r && (r.purchaseId !== s2.purchaseId || r.date !== s2.date)) {
         if (s2.purchaseId) await DB.save(s2.recordStore, { ...r, purchaseId: s2.purchaseId, date: s2.date, time: s2.time });
         else { await DB.remove(s2.recordStore, r.id); s2 = await DB.save('checkins', { ...s2, recordId: '', nth: null }); }
       } else if (!r && s2.purchaseId) s2 = await linkCheckinRecord({ ...s2, recordId: '' });
@@ -560,7 +715,7 @@ function viewCheckin(id) {
     }
     if (e.target.closest('[data-delc]')) {
       const linked = c.recordId && DB.get(c.recordStore, c.recordId);
-      if (!confirm(linked ? '確定刪除這筆簽到？\n（會一併刪除自動建立的上課／服務紀錄，堂數會還回去）' : '確定刪除這筆簽到？')) return;
+      if (!confirm(linked ? '確定刪除這筆簽到？\n（會一併刪除自動建立的上課／服務紀錄，堂數或儲值金會還回去）' : '確定刪除這筆簽到？')) return;
       if (linked) await DB.remove(c.recordStore, c.recordId);
       await DB.remove('checkins', c.id);
       closeModal(); toast('已刪除');
@@ -573,7 +728,7 @@ function checkinRows(list) {
     const p = c.purchaseId && DB.get('purchases', c.purchaseId);
     return `<tr data-act="viewCheckin" data-id="${c.id}">
       <td>${list.length - i}</td><td>${esc(c.date)}</td><td>${esc(c.time || '')}</td><td>${esc(c.type || '')}</td>
-      <td>${p ? esc(p.name) : '不扣堂'}</td><td>${c.nth ? `${c.nth}/${c.total}` : ''}</td>
+      <td>${ckPayText(c, p)}</td><td>${c.nth ? `${c.nth}/${c.total}` : ''}</td>
       <td class="sigcell">${c.signature ? `<img src="${c.signature}" alt="簽名">` : '<span class="red">未簽</span>'}</td></tr>`;
   }).join('');
 }
@@ -582,7 +737,7 @@ function checkinsTab(memberId) {
   const list = DB.byMember('checkins', memberId).sort(byDateDesc);
   if (!list.length) return empty('還沒有簽到紀錄。會員來上課時，點上方「✍️ 簽到」讓會員簽名');
   return `<div class="tablewrap"><table class="mtable checkin-table">
-    <tr><th>#</th><th>日期</th><th>時間</th><th>項目</th><th>課程</th><th>堂次</th><th>會員簽名</th></tr>
+    <tr><th>#</th><th>日期</th><th>時間</th><th>項目</th><th>課程／付款</th><th>堂次</th><th>會員簽名</th></tr>
     ${checkinRows(list)}</table></div>
     <div class="btnrow center-row" style="margin-top:12px"><button class="btn" data-act="printCheckins">🖨 列印簽到表</button></div>`;
 }
@@ -592,8 +747,8 @@ function printCheckins(memberId) {
   const list = DB.byMember('checkins', memberId).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
   printHTML(`<article class="contract-doc"><img class="contract-logo" src="icons/logo.png" alt=""><h1>${esc(SETTINGS.studioName)}</h1><h2>客戶簽到表</h2>
     <p>會員：${esc(m.name)}　電話：${esc(m.phone || '')}</p>
-    <table class="kv checkin-print"><tr><th>#</th><th>日期</th><th>時間</th><th>項目</th><th>課程</th><th>堂次</th><th>會員簽名</th></tr>
-    ${list.map((c, i) => { const p = c.purchaseId && DB.get('purchases', c.purchaseId); return `<tr><td>${i + 1}</td><td>${esc(c.date)}</td><td>${esc(c.time || '')}</td><td>${esc(c.type || '')}</td><td>${p ? esc(p.name) : '不扣堂'}</td><td>${c.nth ? `${c.nth}/${c.total}` : ''}</td><td class="sigcell">${c.signature ? `<img src="${c.signature}">` : ''}</td></tr>`; }).join('')}
+    <table class="kv checkin-print"><tr><th>#</th><th>日期</th><th>時間</th><th>項目</th><th>課程／付款</th><th>堂次</th><th>會員簽名</th></tr>
+    ${list.map((c, i) => { const p = c.purchaseId && DB.get('purchases', c.purchaseId); return `<tr><td>${i + 1}</td><td>${esc(c.date)}</td><td>${esc(c.time || '')}</td><td>${esc(c.type || '')}</td><td>${ckPayText(c, p)}</td><td>${c.nth ? `${c.nth}/${c.total}` : ''}</td><td class="sigcell">${c.signature ? `<img src="${c.signature}">` : ''}</td></tr>`; }).join('')}
     </table></article>`, `${m.name}_簽到表`);
 }
 
@@ -795,6 +950,8 @@ views.home = () => {
   const sessionsM = DB.all('sessions').filter((s) => (s.date || '').startsWith(month)).length;
   const servicesM = DB.all('services').filter((s) => (s.date || '').startsWith(month)).length;
   const inactive = inactiveMembers();
+  const minSpa = Math.min(...spaItems().map((i) => Number(i.price) || Infinity));
+  const lowWallet = DB.all('members').filter((m) => hasWallet(m.id)).map((m) => ({ m, b: balance(m.id) })).filter((x) => x.b < (isFinite(minSpa) ? minSpa : 1)).sort((a, b) => a.b - b.b);
 
   const pkRow = (p, extra) => `<a class="row" href="#/member/${p.memberId}"><span class="grow"><b>${esc(memberName(p.memberId))}</b>・${esc(p.name)}</span><span class="muted">${extra}</span></a>`;
 
@@ -810,6 +967,7 @@ views.home = () => {
   </section>
   <div class="cols">
     <section class="card warn"><h3>堂數快用完（≤2 堂）</h3>${low.length ? low.map((p) => pkRow(p, `剩 ${remaining(p)} 堂`)).join('') : empty('沒有')}</section>
+    ${lowWallet.length ? `<section class="card warn"><h3>儲值金不足一次服務</h3>${lowWallet.map(({ m, b }) => `<a class="row" href="#/member/${m.id}"><span class="grow"><b>${esc(m.name)}</b></span><span class="${b < 0 ? 'red' : 'muted'}">餘額 ${money(b)}</span></a>`).join('')}</section>` : ''}
     ${unpaid.length ? `<section class="card warn"><h3>尚有未付款</h3>${unpaid.map((p) => pkRow(p, `欠 ${money(owed(p))}`)).join('')}</section>` : ''}
     <section class="card warn"><h3>超過一個月沒上課${inactive.length ? `（${inactive.length} 位）` : ''}</h3>${inactive.length ? inactive.map(inactiveRow).join('') : empty('沒有')}</section>
     <section class="card"><h3>本月壽星 🎂</h3>${bdays.length ? bdays.map((m) => `<a class="row" href="#/member/${m.id}"><span class="grow"><b>${esc(m.name)}</b></span><span class="muted">${m.birthday.slice(5).replace('-', '/')}</span></a>`).join('') : empty('沒有')}</section>
@@ -832,7 +990,7 @@ function memberListHTML() {
       <div class="avatar">${esc((m.name || '?').slice(0, 1))}</div>
       <div class="grow"><b>${esc(m.name)}</b><div class="muted">${esc(m.phone || '')}</div>
       <div class="tags">${(m.tags || '').split(/[,，、]/).filter((t) => t.trim()).map((t) => `<span class="tag">${esc(t.trim())}</span>`).join('')}</div></div>
-      <div class="right">${pk.map((p) => `<span class="pill ${p.category === 'fitness' ? 'fit' : 'spa'}">${CATS[p.category] || ''} 剩 ${remaining(p)}</span>`).join('')}</div>
+      <div class="right">${pk.map((p) => `<span class="pill ${p.category === 'fitness' ? 'fit' : 'spa'}">${CATS[p.category] || ''} 剩 ${remaining(p)}</span>`).join('')}${hasWallet(m.id) ? `<span class="pill spa">儲值金 ${money(balance(m.id))}</span>` : ''}</div>
     </a>`;
   }).join('') : empty(DB.all('members').length ? '找不到符合的會員' : '還沒有會員，點右上角「新增會員」開始吧')}`;
 }
@@ -847,10 +1005,12 @@ views.member = (id) => {
   const contracts = DB.byMember('contracts', id).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const appts = DB.all('appointments').filter((a) => a.memberId === id).sort(byDateDesc);
   const meas = DB.byMember('measurements', id).sort(byDateDesc);
-  const tabs = [['overview', '總覽'], ['purchases', `買課 ${pks.length}`], ['sessions', `上課 ${sessions.length}`], ['services', `服務 ${services.length}`], ['contracts', `合約 ${contracts.length}`], ['measurements', `身體數據 ${meas.length}`], ['checkins', `簽到表 ${DB.byMember('checkins', id).length}`], ['photos', `體態照片 ${DB.byMember('photos', id).length}`], ['appointments', `預約 ${appts.length}`]];
+  const bal = balance(id);
+  const wallet = hasWallet(id);
+  const tabs = [['overview', '總覽'], ['purchases', `買課 ${pks.length}`], ['wallet', `儲值金 ${money(bal)}`], ['sessions', `上課 ${sessions.length}`], ['services', `服務 ${services.length}`], ['contracts', `合約 ${contracts.length}`], ['measurements', `身體數據 ${meas.length}`], ['checkins', `簽到表 ${DB.byMember('checkins', id).length}`], ['photos', `體態照片 ${DB.byMember('photos', id).length}`], ['appointments', `預約 ${appts.length}`]];
   const active = activePkgs(id);
   const tab = memberTab;
-  const totalSpent = pks.reduce((s, p) => s + (Number(p.price) || 0), 0) + services.filter((s) => !s.purchaseId).reduce((s, x) => s + (Number(x.price) || 0), 0);
+  const totalSpent = revenueIn('', id);
 
   let body = '';
   const pkgName = (pid) => { const p = DB.get('purchases', pid); return p ? esc(p.name) : '單次'; };
@@ -865,7 +1025,7 @@ views.member = (id) => {
         ${m.note ? `<p><b>備註</b><br>${nl2br(m.note)}</p>` : ''}
         ${!m.allergy && !m.health && !m.goals && !m.note ? empty('尚未填寫') : ''}
       </section>
-      <section class="card"><h3>有效課程</h3>${active.length ? active.map((p) => pkgBar(p)).join('') : empty('沒有剩餘堂數的課程')}<p class="muted">累計消費 ${money(totalSpent)}</p></section>
+      <section class="card"><h3>有效課程</h3>${active.length ? active.map((p) => pkgBar(p)).join('') : empty('沒有剩餘堂數的課程')}${wallet ? `<div class="pkg"><div class="pkg-top"><span>芳療儲值金</span><span>餘額 <b class="${bal < 0 ? 'red' : ''}">${money(bal)}</b></span></div></div>` : ''}<p class="muted">累計消費 ${money(totalSpent)}</p></section>
       <section class="card"><h3>最近紀錄</h3>${[...sessions.map((s) => ({ ...s, _t: '健身' })), ...services.map((s) => ({ ...s, _t: '芳療' }))].sort(byDateDesc).slice(0, 5).map((s) => `<div class="row"><span class="time">${esc(s.date)}</span><span class="grow"><span class="pill ${s._t === '健身' ? 'fit' : 'spa'}">${s._t}</span> ${esc(s._t === '健身' ? (s.focus || []).join('、') : s.item)}</span></div>`).join('') || empty('還沒有紀錄')}</section>
     </div>`;
   } else if (tab === 'purchases') {
@@ -875,6 +1035,8 @@ views.member = (id) => {
       <div class="muted">購買 ${esc(p.date)}${p.method ? '・' + esc(p.method) : ''}${p.expiry ? '・到期 ' + esc(p.expiry) : ''}${owed(p) ? `・<span class="red">尚欠 ${money(owed(p))}</span>` : ''}</div>
       ${p.note ? `<div>${nl2br(p.note)}</div>` : ''}
     </div>`).join('') : empty('還沒有買課紀錄');
+  } else if (tab === 'wallet') {
+    body = walletTab(id);
   } else if (tab === 'sessions') {
     body = sessions.length ? sessions.map((s) => `<div class="rec" data-act="edit" data-store="sessions" data-id="${s.id}">
       <div class="rec-head"><b>${fmtDate(s.date)} ${esc(s.time || '')}</b><span class="grow"></span><span class="muted">${pkgName(s.purchaseId)}${s.duration ? '・' + s.duration + ' 分' : ''}</span></div>
@@ -885,7 +1047,7 @@ views.member = (id) => {
     </div>`).join('') : empty('還沒有上課紀錄');
   } else if (tab === 'services') {
     body = services.length ? services.map((s) => `<div class="rec" data-act="edit" data-store="services" data-id="${s.id}">
-      <div class="rec-head"><b>${fmtDate(s.date)} ${esc(s.time || '')}</b><span>${esc(s.item || '')}</span><span class="grow"></span><span class="muted">${s.purchaseId ? pkgName(s.purchaseId) : s.price ? money(s.price) : '單次'}${s.duration ? '・' + s.duration + ' 分' : ''}</span></div>
+      <div class="rec-head"><b>${fmtDate(s.date)} ${esc(s.time || '')}</b><span>${esc(s.item || '')}</span><span class="grow"></span><span class="muted">${payText(s)}${s.duration ? '・' + s.duration + ' 分' : ''}</span></div>
       ${(s.oils || []).length ? `<p><b>精油：</b>${s.oils.map(esc).join('、')}</p>` : ''}${s.blend ? `<p><b>配方：</b>${esc(s.blend)}</p>` : ''}
       ${(s.areas || []).length ? `<p><b>部位：</b>${s.areas.map(esc).join('、')}${s.pressure ? `・力道 ${esc(s.pressure)}` : ''}</p>` : ''}
       ${s.before ? `<p><b>服務前：</b>${nl2br(s.before)}</p>` : ''}${s.after ? `<p><b>服務後：</b>${nl2br(s.after)}</p>` : ''}
@@ -906,13 +1068,13 @@ views.member = (id) => {
     body = appts.length ? appts.map((a) => `<div class="rec" data-act="edit" data-store="appointments" data-id="${a.id}"><div class="rec-head"><b>${fmtDate(a.date)} ${esc(a.time)}</b><span class="pill ${a.type === '健身' ? 'fit' : 'spa'}">${esc(a.type || '')}</span><span class="grow"></span><span>${esc(apptStatus(a))}</span></div>${a.note ? `<div>${nl2br(a.note)}</div>` : ''}</div>`).join('') : empty('還沒有預約');
   }
 
-  const addMap = { purchases: '＋ 買課', sessions: '＋ 上課紀錄', services: '＋ 服務紀錄', contracts: '＋ 合約', measurements: '＋ 身體數據', photos: '＋ 體態照片', checkins: '✍️ 簽到', appointments: '＋ 預約' };
+  const addMap = { wallet: '＋ 儲值', purchases: '＋ 買課', sessions: '＋ 上課紀錄', services: '＋ 服務紀錄', contracts: '＋ 合約', measurements: '＋ 身體數據', photos: '＋ 體態照片', checkins: '✍️ 簽到', appointments: '＋ 預約' };
   return `
   <section class="member-head">
     <a href="#/members" class="back">‹ 會員</a>
     <div class="mh-main"><div class="avatar big">${esc(m.name.slice(0, 1))}</div>
       <div class="grow"><h1>${esc(m.name)}</h1><div class="muted">${esc(m.phone || '')}${m.allergy ? ' ・<span class="red">⚠️ 有過敏</span>' : ''}</div>
-      <div class="tags">${active.map((p) => `<span class="pill ${p.category === 'fitness' ? 'fit' : 'spa'}">${esc(p.name)} 剩 ${remaining(p)} 堂</span>`).join('')}</div></div>
+      <div class="tags">${active.map((p) => `<span class="pill ${p.category === 'fitness' ? 'fit' : 'spa'}">${esc(p.name)} 剩 ${remaining(p)} 堂</span>`).join('')}${wallet ? `<span class="pill spa">儲值金 ${money(bal)}</span>` : ''}</div></div>
       <button class="btn ghost" data-act="edit" data-store="members" data-id="${m.id}">編輯資料</button>
     </div>
     <div class="quick">
@@ -920,6 +1082,7 @@ views.member = (id) => {
       <button class="btn fitb" data-act="add" data-store="sessions">＋ 上課紀錄</button>
       <button class="btn spab" data-act="add" data-store="services">＋ 服務紀錄</button>
       <button class="btn" data-act="add" data-store="purchases">＋ 買課</button>
+      <button class="btn spab" data-act="add" data-store="topups">＋ 儲值</button>
       <button class="btn" data-act="add" data-store="contracts">＋ 合約</button>
       <button class="btn" data-act="add" data-store="appointments">＋ 預約</button>
       <button class="btn" data-act="add" data-store="measurements">＋ 身體數據</button>
@@ -928,9 +1091,26 @@ views.member = (id) => {
     </div>
   </section>
   <nav class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-act="tab" data-tab="${k}">${l}</button>`).join('')}</nav>
-  ${tab === 'photos' ? `<div class="tab-add"><label class="btn primary small">${addMap.photos}<input type="file" accept="image/*" multiple hidden data-quick-photo></label></div>` : addMap[tab] ? `<div class="tab-add"><button class="btn primary small" data-act="add" data-store="${tab}">${addMap[tab]}</button></div>` : ''}
+  ${tab === 'photos' ? `<div class="tab-add"><label class="btn primary small">${addMap.photos}<input type="file" accept="image/*" multiple hidden data-quick-photo></label></div>` : addMap[tab] ? `<div class="tab-add"><button class="btn primary small" data-act="add" data-store="${tab === 'wallet' ? 'topups' : tab}">${addMap[tab]}</button></div>` : ''}
   <div class="tab-body" data-member="${id}">${body}</div>`;
 };
+
+// 儲值金明細：儲值（＋）與芳療扣款（−），附每筆之後的餘額
+function walletTab(memberId) {
+  const rows = [
+    ...DB.byMember('topups', memberId).map((t) => ({ r: t, store: 'topups', date: t.date, at: t.createdAt, label: `儲值${t.plan ? '・' + esc(t.plan) : ''}${t.method ? '・' + esc(t.method) : ''}${t.note ? '・' + esc(t.note) : ''}`, add: (Number(t.amount) || 0) + (Number(t.bonus) || 0), bonus: Number(t.bonus) || 0 })),
+    ...walletUses(memberId).map((s) => ({ r: s, store: 'services', date: s.date, at: s.createdAt, label: esc(s.item || '芳療服務'), sub: Number(s.price) || 0 })),
+  ].sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.at || '').localeCompare(b.at || ''));
+  let run = 0;
+  rows.forEach((x) => { run += (x.add || 0) - (x.sub || 0); x.bal = run; });
+  const bal = balance(memberId);
+  return `<section class="card wallet-sum"><span>芳療儲值金餘額</span><b class="${bal < 0 ? 'red' : ''}">${money(bal)}</b>
+      <span class="muted small">累計儲值 ${money(walletIn(memberId))}・已使用 ${money(walletIn(memberId) - bal)}</span></section>
+    ${rows.length ? `<div class="tablewrap"><table class="mtable"><tr><th>日期</th><th>項目</th><th>儲值</th><th>扣款</th><th>餘額</th></tr>
+    ${rows.reverse().map((x) => `<tr data-act="edit" data-store="${x.store}" data-id="${x.r.id}"><td>${esc(x.date || '')}</td><td>${x.label}</td>
+      <td>${x.add ? `+${money(x.add)}${x.bonus ? `<br><small class="muted">含贈送 ${money(x.bonus)}</small>` : ''}` : ''}</td><td>${x.sub ? `<span class="red">−${money(x.sub)}</span>` : ''}</td><td>${money(x.bal)}</td></tr>`).join('')}
+    </table></div>` : empty('還沒有儲值紀錄。點上方「＋ 儲值」幫會員儲值，芳療服務時選「儲值金扣款」就會自動扣')}`;
+}
 
 function pkgBar(p) {
   const t = Number(p.total) || 0, u = used(p), pct = t ? Math.min(100, (u / t) * 100) : 0;
@@ -977,12 +1157,13 @@ views.calendar = () => {
 views.reports = () => {
   const now = new Date();
   const months = [...Array(12)].map((_, i) => { const d = new Date(now.getFullYear(), now.getMonth() - 11 + i, 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; });
-  const data = months.map((m) => ({ m, fit: DB.all('purchases').filter((p) => p.category === 'fitness' && (p.date || '').startsWith(m)).reduce((s, p) => s + (+p.price || 0), 0), spa: DB.all('purchases').filter((p) => p.category !== 'fitness' && (p.date || '').startsWith(m)).reduce((s, p) => s + (+p.price || 0), 0) + DB.all('services').filter((s) => !s.purchaseId && (s.date || '').startsWith(m)).reduce((s, x) => s + (+x.price || 0), 0), cnt: DB.all('sessions').filter((s) => (s.date || '').startsWith(m)).length + DB.all('services').filter((s) => (s.date || '').startsWith(m)).length }));
+  const data = months.map((m) => ({ m, fit: DB.all('purchases').filter((p) => p.category === 'fitness' && (p.date || '').startsWith(m)).reduce((s, p) => s + (+p.price || 0), 0), spa: DB.all('purchases').filter((p) => p.category !== 'fitness' && (p.date || '').startsWith(m)).reduce((s, p) => s + (+p.price || 0), 0) + sumBy(DB.all('topups').filter((t) => (t.date || '').startsWith(m)), 'amount') + sumBy(cashServices(DB.all('services').filter((s) => (s.date || '').startsWith(m))), 'price'), cnt: DB.all('sessions').filter((s) => (s.date || '').startsWith(m)).length + DB.all('services').filter((s) => (s.date || '').startsWith(m)).length }));
   const max = Math.max(1, ...data.map((d) => d.fit + d.spa));
   const yr = String(now.getFullYear());
   const yTotal = revenueIn(yr);
-  const top = DB.all('members').map((m) => ({ m, v: DB.byMember('purchases', m.id).reduce((s, p) => s + (+p.price || 0), 0) + DB.byMember('services', m.id).filter((s) => !s.purchaseId).reduce((s, x) => s + (+x.price || 0), 0) })).filter((x) => x.v > 0).sort((a, b) => b.v - a.v).slice(0, 10);
+  const top = DB.all('members').map((m) => ({ m, v: revenueIn('', m.id) })).filter((x) => x.v > 0).sort((a, b) => b.v - a.v).slice(0, 10);
   const liability = DB.all('purchases').filter((p) => !expired(p) && remaining(p) > 0).reduce((s, p) => s + (+p.total ? (+p.price || 0) * remaining(p) / +p.total : 0), 0);
+  const walletTotal = DB.all('members').reduce((s, m) => s + Math.max(0, balance(m.id)), 0);
   const oilCount = {};
   DB.all('services').forEach((s) => (s.oils || []).forEach((o) => { oilCount[o] = (oilCount[o] || 0) + 1; }));
   const oils = Object.entries(oilCount).sort((a, b) => b[1] - a[1]).slice(0, 8);
@@ -992,9 +1173,10 @@ views.reports = () => {
     <div class="stat"><span>${yr} 年營收</span><b>${money(yTotal)}</b></div>
     <div class="stat"><span>本月營收</span><b>${money(revenueIn(months[11]))}</b></div>
     <div class="stat"><span>未使用堂數價值</span><b>${money(liability)}</b></div>
+    <div class="stat"><span>儲值金未使用餘額</span><b>${money(walletTotal)}</b></div>
     <div class="stat"><span>尚未收款</span><b>${money(DB.all('purchases').reduce((s, p) => s + owed(p), 0))}</b></div>
   </section>
-  <section class="card"><h3>近 12 個月營收</h3><div class="legend"><span><i style="background:var(--c1)"></i>健身</span><span><i style="background:var(--c2)"></i>芳療按摩／其他</span></div>
+  <section class="card"><h3>近 12 個月營收</h3><div class="legend"><span><i style="background:var(--c1)"></i>健身</span><span><i style="background:var(--c2)"></i>芳療按摩（含儲值）／其他</span></div>
     <div class="bars">${data.map((d) => `<div class="bcol" title="${d.m}：${money(d.fit + d.spa)}"><div class="bval">${d.fit + d.spa ? Math.round((d.fit + d.spa) / 1000) + 'k' : ''}</div><div class="bstack"><i style="height:${(d.spa / max) * 100}%;background:var(--c2)"></i><i style="height:${(d.fit / max) * 100}%;background:var(--c1)"></i></div><div class="blabel">${+d.m.slice(5)}月</div><div class="bcnt">${d.cnt} 堂</div></div>`).join('')}</div>
   </section>
   <div class="cols">
@@ -1023,6 +1205,23 @@ views.settings = () => {
       </form>`}
     <p class="muted small">待上傳：${st.pending} 筆</p>
   </section>
+  <section class="card"><h3>💆 芳療服務項目與價格</h3>
+    <p class="muted">新增芳療服務或簽到時，選項目就會自動帶入時長和金額，可用儲值金扣款或現金付款。</p>
+    <form data-form="pricing">
+      <div class="price-rows" data-rows="spa">
+        <div class="price-row head"><span>服務項目名稱</span><span>分鐘</span><span>價格</span><span></span></div>
+        ${spaItems().map(spaRow).join('')}
+      </div>
+      <button type="button" class="btn ghost small" data-act="addPriceRow" data-kind="spa">＋ 新增服務項目</button>
+      <h4>儲值方案</h4>
+      <div class="price-rows" data-rows="topup">
+        <div class="price-row head"><span>方案名稱</span><span>儲值金額</span><span>贈送金額</span><span></span></div>
+        ${topupPlans().map(topupRow).join('')}
+      </div>
+      <button type="button" class="btn ghost small" data-act="addPriceRow" data-kind="topup">＋ 新增儲值方案</button>
+      <div class="btnrow" style="margin-top:12px"><button class="btn primary">儲存價格設定</button></div>
+    </form>
+  </section>
   <section class="card"><h3>🏠 工作室資訊（顯示在合約上）</h3>
     <form class="grid" data-form="studio">
       <label class="field"><span>工作室名稱</span><input name="studioName" value="${esc(SETTINGS.studioName)}"></label>
@@ -1042,6 +1241,16 @@ views.settings = () => {
     <p class="muted small">App 版本：${APP_VERSION}</p>
   </section>`;
 };
+
+const priceRow = (a, b, c, ph) => `<div class="price-row"><input name="n" value="${esc(a)}" placeholder="${ph[0]}"><input name="a" type="number" inputmode="decimal" step="any" value="${esc(b ?? '')}" placeholder="${ph[1]}"><input name="b" type="number" inputmode="decimal" step="any" value="${esc(c ?? '')}" placeholder="${ph[2]}"><button type="button" class="x" data-act="delPriceRow">✕</button></div>`;
+const spaRow = (i = {}) => priceRow(i.name, i.minutes, i.price, ['例：芳療按摩 1.5 小時', '分鐘', '價格']);
+const topupRow = (t = {}) => priceRow(t.name, t.amount, t.bonus, ['例：儲值 2 萬送 2 千', '儲值金額', '贈送金額']);
+function readPriceRows(form, kind) {
+  return $$(`[data-rows="${kind}"] .price-row:not(.head)`, form).map((r) => {
+    const [n, a, b] = $$('input', r).map((x) => x.value.trim());
+    return { n, a: num(a), b: num(b) };
+  }).filter((x) => x.n);
+}
 
 function syncText(st) {
   const last = st.last ? `（上次 ${st.last.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}）` : '';
@@ -1068,15 +1277,17 @@ function toCSV(store) {
   const fields = F[store];
   const rows = DB.all(store).sort(byDateDesc);
   const cols = store === 'members' ? [] : [{ k: '_member', label: '會員' }];
-  const all = [...cols, ...fields.filter((f) => f.type !== 'member'), ...(store === 'appointments' ? [{ k: '_member', label: '會員' }] : []), ...(store === 'purchases' ? [{ k: '_used', label: '已用堂數' }, { k: '_left', label: '剩餘堂數' }] : [])];
+  const all = [...cols, ...fields.filter((f) => f.type !== 'member'), ...(store === 'appointments' ? [{ k: '_member', label: '會員' }] : []), ...(store === 'purchases' ? [{ k: '_used', label: '已用堂數' }, { k: '_left', label: '剩餘堂數' }] : []), ...(store === 'members' ? [{ k: '_wallet', label: '儲值金餘額' }] : [])];
   const uniq = all.filter((c, i) => all.findIndex((x) => x.k === c.k) === i);
   const val = (r, c) => {
     if (c.k === '_member') return memberName(r.memberId);
     if (c.k === '_used') return used(r);
     if (c.k === '_left') return remaining(r);
+    if (c.k === '_wallet') return balance(r.id);
     const v = r[c.k];
     if (c.type === 'purchase') return DB.get('purchases', v)?.name || '';
     if (c.k === 'category') return CATS[v] || v || '';
+    if (c.k === 'payType') return PAY[payOf(r)];
     if (c.type === 'exercises') return (v || []).map((e) => `${e.name} ${e.weight || ''}${e.weight ? 'kg' : ''} ${e.reps || ''}x${e.sets || ''}`).join('；');
     if (Array.isArray(v)) return v.join('、');
     return v ?? '';
@@ -1094,8 +1305,9 @@ function printMember(id) {
     <p>電話：${esc(m.phone)}　生日：${esc(m.birthday)}　入會：${esc(m.joinDate)}</p>
     ${m.allergy ? `<p><b>過敏：</b>${nl2br(m.allergy)}</p>` : ''}${m.health ? `<p><b>身體狀況：</b>${nl2br(m.health)}</p>` : ''}${m.goals ? `<p><b>目標：</b>${nl2br(m.goals)}</p>` : ''}
     <h3>買課</h3><table class="kv">${pks.map((p) => `<tr><td>${esc(p.date)}</td><td>${esc(p.name)}</td><td>${money(p.price)}</td><td>剩 ${remaining(p)}/${p.total}</td></tr>`).join('')}</table>
+    ${hasWallet(id) ? `<h3>儲值金（餘額 ${money(balance(id))}）</h3><table class="kv">${DB.byMember('topups', id).sort(byDateDesc).map((t) => `<tr><td>${esc(t.date)}</td><td>儲值${t.plan ? '・' + esc(t.plan) : ''}</td><td>+${money((Number(t.amount) || 0) + (Number(t.bonus) || 0))}</td><td>${t.bonus ? '含贈送 ' + money(t.bonus) : ''}</td></tr>`).join('')}</table>` : ''}
     <h3>上課紀錄</h3><table class="kv">${sessions.map((s) => `<tr><td>${esc(s.date)}</td><td>${(s.focus || []).join('、')}</td><td>${(s.exercises || []).map((e) => esc(`${e.name} ${e.weight || ''} ${e.reps || ''}x${e.sets || ''}`)).join('<br>')}</td><td>${nl2br(s.note)}</td></tr>`).join('')}</table>
-    <h3>服務紀錄</h3><table class="kv">${services.map((s) => `<tr><td>${esc(s.date)}</td><td>${esc(s.item)}</td><td>${(s.oils || []).join('、')}</td><td>${nl2br(s.after || s.note)}</td></tr>`).join('')}</table>
+    <h3>服務紀錄</h3><table class="kv">${services.map((s) => `<tr><td>${esc(s.date)}</td><td>${esc(s.item)}</td><td>${payText(s)}</td><td>${(s.oils || []).join('、')}</td><td>${nl2br(s.after || s.note)}</td></tr>`).join('')}</table>
   </article>`, `${m.name}_會員紀錄`);
 }
 
@@ -1111,7 +1323,7 @@ const actions = {
     const mid = $('.tab-body')?.dataset.member || location.hash.split('/')[2];
     if (d.store === 'appointments') return editRecord('appointments', { memberId: mid, type: '健身' }, {});
     if (d.store === 'checkins') return newCheckin(mid);
-    editRecord(d.store, {}, { memberId: mid, after: (s) => { if (d.store === 'contracts') viewContract(s.id); else { memberTab = d.store; render(); } } });
+    editRecord(d.store, {}, { memberId: mid, after: (s) => { if (d.store === 'contracts') viewContract(s.id); else { memberTab = d.store === 'topups' ? 'wallet' : d.store; render(); } } });
   },
   tab: (d) => { memberTab = d.tab; render(); },
   viewContract: (d) => viewContract(d.id),
@@ -1126,6 +1338,7 @@ const actions = {
   viewPhoto: (d) => viewPhoto(d.id),
   viewCheckin: (d) => viewCheckin(d.id),
   printCheckins: () => printCheckins(location.hash.split('/')[2]),
+  addPriceRow: (d) => { $(`[data-rows="${d.kind}"]`).insertAdjacentHTML('beforeend', d.kind === 'spa' ? spaRow() : topupRow()); },
 };
 
 document.addEventListener('click', (e) => {
@@ -1133,6 +1346,7 @@ document.addEventListener('click', (e) => {
   if (!el || el.closest('#modal form')) return;
   e.preventDefault();
   e.stopPropagation();
+  if (el.dataset.act === 'delPriceRow') { el.closest('.price-row').remove(); return; }
   actions[el.dataset.act]?.(el.dataset);
 });
 
@@ -1193,6 +1407,15 @@ document.addEventListener('submit', async (e) => {
       toast('連線成功，開始同步');
     } catch (err) { alert('連線失敗：' + err.message); }
     render();
+  } else if (f.dataset.form === 'pricing') {
+    const spa = readPriceRows(f, 'spa').map((x) => ({ name: x.n, minutes: x.a, price: x.b }));
+    const plans = readPriceRows(f, 'topup').map((x) => ({ name: x.n, amount: x.a, bonus: x.b }));
+    if (!spa.length) { alert('至少要有一個服務項目'); return; }
+    const names = spa.map((x) => x.name);
+    if (new Set(names).size !== names.length) { alert('服務項目名稱不能重複'); return; }
+    const cur = DB.get('settings', 'studio') || { id: 'studio' };
+    await DB.save('settings', { ...cur, spaItems: spa, topupPlans: plans });
+    toast('價格設定已儲存');
   } else if (f.dataset.form === 'studio') {
     const cur = DB.get('settings', 'studio') || { id: 'studio' };
     await DB.save('settings', { ...cur, ...v });
